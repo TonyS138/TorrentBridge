@@ -1,476 +1,399 @@
-// =====================================================
-// Torrent Bridge Plugin - ФИНАЛЬНАЯ ВЕРСИЯ
-// Версия: 1.3
-// =====================================================
+/**
+ * Lampa Plugin: TorrServer Launcher for Torrent Manager
+ * 
+ * Позволяет запускать торренты из Torrent Manager на онлайн-просмотр
+ * через TorrServer прямо из списка торрентов.
+ * 
+ * Интеграция: Добавляет пункт "Play on TorrServer" в меню действий
+ * с торрентом в Torrent Manager.
+ */
 
-(function() {
+(function () {
     'use strict';
 
-    const COMPONENT = 'torrentbridge';
+    // Конфигурация
+    const CONFIG = {
+        torrServerUrl: 'http://192.168.1.101:8090',
+        transmissionUrl: Lampa.Storage.get('lmetorrenttransmissionUrl', 'http://192.168.1.112:9091'),
+        transmissionPath: Lampa.Storage.get('lmetorrenttransmissionPath', '/transmission/rpc')
+    };
 
-    // ===== ОСНОВНОЙ КЛАСС =====
-    class TorrentBridge {
-        constructor() {
-            this._init();
+    /**
+     * Получение session ID для Transmission API
+     */
+    let transmissionSessionId = null;
+
+    async function getTransmissionSessionId() {
+        const config = {
+            url: CONFIG.transmissionUrl,
+            user: Lampa.Storage.get('lmetorrenttransmissionUser', ''),
+            pass: Lampa.Storage.get('lmetorrenttransmissionPass', '')
+        };
+
+        const headers = {
+            'Authorization': 'Basic ' + btoa(config.user + ':' + config.pass),
+            'Content-Type': 'application/json'
+        };
+
+        if (transmissionSessionId) {
+            headers['X-Transmission-Session-Id'] = transmissionSessionId;
         }
 
-        _init() {
-            // Добавляем настройки
-            this._addSettings();
-
-            // Перехватываем выбор торрента
-            this._interceptTorrents();
-
-            console.log('[Bridge] Plugin initialized');
-        }
-
-        _addSettings() {
-            // Регистрируем компонент
-            Lampa.SettingsApi.addComponent({
-                component: COMPONENT,
-                name: 'Torrent Bridge',
-                icon: '<svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>'
-            });
-
-            // Настройка локального пути - используем полное имя как в LME TorrentManager
-            Lampa.SettingsApi.addParam({
-                component: COMPONENT,
-                param: {
-                    name: COMPONENT + 'LocalPath',
-                    type: 'input',
-                    default: ''
-                },
-                field: {
-                    name: 'Локальный путь к файлам'
-                },
-                onChange: function(value) {
-                    Lampa.Storage.set(COMPONENT + 'LocalPath', value);
-                }
-            });
-
-            // Режим работы
-            Lampa.SettingsApi.addParam({
-                component: COMPONENT,
-                param: {
-                    name: COMPONENT + 'Mode',
-                    type: 'select',
-                    default: 'hybrid',
-                    values: {
-                        hybrid: 'Гибридный',
-                        stream: 'Только стрим',
-                        download: 'Только скачивание'
-                    }
-                },
-                field: {
-                    name: 'Режим работы'
-                },
-                onChange: function(value) {
-                    Lampa.Storage.set(COMPONENT + 'Mode', value);
-                }
-            });
-        }
-
-        _interceptTorrents() {
-            Lampa.Listener.follow('torrent', (e) => {
-                if (e.type !== 'onlong') return;
-
-                const torrent = e.element;
-                const movie = Lampa.Activity.active().movie;
-
-                if (!torrent) return;
-
-                e.menu.push({
-                    title: this._buildButton('🌉 Мост'),
-                    onSelect: () => {
-                        this._handleTorrent(torrent, movie);
-                    }
-                });
-            });
-        }
-
-        _buildButton(label) {
-            return `<div style="display:flex;align-items:center;gap:8px;padding:4px 8px;">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/>
-                </svg>
-                ${label}
-            </div>`;
-        }
-
-        async _handleTorrent(torrent, movie) {
-            const magnet = torrent.MagnetUri || torrent.Link;
-            const title = movie?.title || movie?.name || 'Фильм';
-
-            if (!magnet) {
-                Lampa.Bell.push({ text: '❌ Нет магнет-ссылки' });
-                return;
-            }
-
-            const mode = Lampa.Storage.get(COMPONENT + 'Mode') || 'hybrid';
-
-            try {
-                Lampa.Bell.push({ text: '⏳ Обработка...' });
-
-                if (mode === 'download') {
-                    await this._downloadOnly(magnet, title, movie);
-                } else if (mode === 'stream') {
-                    await this._streamOnly(magnet, title);
-                } else {
-                    await this._hybridMode(magnet, title, movie);
-                }
-            } catch (error) {
-                console.error('[Bridge] Error:', error);
-                Lampa.Bell.push({ text: `❌ ${error.message || 'Ошибка'}` });
-            }
-        }
-
-        // ===== ГИБРИДНЫЙ РЕЖИМ =====
-        async _hybridMode(magnet, title, movie) {
-            // Проверяем через Transmission
-            const exists = await this._checkTorrentExists(magnet);
+        return new Promise((resolve, reject) => {
+            const network = new Lampa.Reguest();
+            network.timeout(10000);
             
-            if (exists) {
-                const torrents = await this._getTorrents();
-                const torrent = torrents.find(t => t.hashString && magnet.includes(t.hashString.toLowerCase()));
-                
-                if (torrent && torrent.percentDone >= 0.99) {
-                    await this._playLocal(torrent, title);
-                    return;
+            const makeRequest = (sessionId) => {
+                const reqHeaders = {...headers};
+                if (sessionId) {
+                    reqHeaders['X-Transmission-Session-Id'] = sessionId;
                 }
                 
-                this._showOptions(torrent, magnet, title);
-                return;
-            }
-
-            await this._addAndStream(magnet, title, movie);
-        }
-
-        // ===== СТРИМ РЕЖИМ =====
-        async _streamOnly(magnet, title) {
-            await this._streamViaTorrServer(magnet, title);
-        }
-
-        // ===== СКАЧИВАНИЕ РЕЖИМ =====
-        async _downloadOnly(magnet, title, movie) {
-            await this._addToTransmission(magnet, title, movie);
-        }
-
-        // ===== ПРОВЕРКА СУЩЕСТВОВАНИЯ ТОРРЕНТА =====
-        async _checkTorrentExists(magnet) {
-            try {
-                const torrents = await this._getTorrents();
-                const hash = magnet.match(/btih:([a-fA-F0-9]{40})/i);
-                if (hash) {
-                    const searchHash = hash[1].toLowerCase();
-                    return torrents.some(t => t.hashString && t.hashString.toLowerCase() === searchHash);
-                }
-                return false;
-            } catch (e) {
-                return false;
-            }
-        }
-
-        // ===== ПОЛУЧЕНИЕ СПИСКА ТОРРЕНТОВ =====
-        async _getTorrents() {
-            // Используем Transmission из LME TorrentManager
-            if (typeof Transmission !== 'undefined' && Transmission.getTorrents) {
-                try {
-                    return await Transmission.getTorrents();
-                } catch (e) {
-                    console.error('[Bridge] Transmission.getTorrents error:', e);
-                }
-            }
-
-            // Собственная реализация
-            try {
-                const config = this._getConfig();
-                const url = `${config.transmissionUrl}/transmission/rpc`;
-                const headers = this._getHeaders(config);
-
-                const data = {
-                    method: 'torrent-get',
-                    arguments: {
-                        fields: ['id', 'name', 'hashString', 'percentDone', 'files', 'downloadDir']
+                network.quiet(
+                    `${CONFIG.transmissionUrl}${CONFIG.transmissionPath}`,
+                    (response) => {
+                        if (typeof response === 'string') {
+                            response = JSON.parse(response);
+                        }
+                        resolve(response);
+                    },
+                    (error) => {
+                        // Обработка 409 Conflict — получение нового session ID
+                        if (error.status === 409) {
+                            const newSessionId = error.getResponseHeader('X-Transmission-Session-Id');
+                            if (newSessionId) {
+                                transmissionSessionId = newSessionId;
+                                makeRequest(newSessionId);
+                            } else {
+                                reject(new Error('Failed to get Transmission session ID'));
+                            }
+                        } else {
+                            reject(error);
+                        }
+                    },
+                    JSON.stringify({method: 'session-get'}),
+                    {
+                        headers: reqHeaders,
+                        type: 'POST',
+                        dataType: 'json'
                     }
-                };
-
-                const response = await this._request(url, headers, data);
-                
-                if (response && response.arguments && response.arguments.torrents) {
-                    return response.arguments.torrents;
-                }
-                return [];
-            } catch (e) {
-                console.error('[Bridge] Error getting torrents:', e);
-                return [];
-            }
-        }
-
-        // ===== ЗАГОЛОВКИ ДЛЯ ЗАПРОСА =====
-        _getHeaders(config) {
-            const headers = {
-                'Authorization': 'Basic ' + btoa(`${config.transmissionUser}:${config.transmissionPass}`),
-                'Content-Type': 'application/json'
+                );
             };
 
-            const sessionId = Lampa.Storage.get('torrentbridge_session_id');
-            if (sessionId) {
-                headers['X-Transmission-Session-Id'] = sessionId;
-            }
+            makeRequest(transmissionSessionId);
+        });
+    }
 
-            return headers;
+    /**
+     * Получение hashString торрента из Transmission по ID
+     */
+    async function getTorrentHash(torrentId) {
+        await getTransmissionSessionId();
+
+        const config = {
+            url: CONFIG.transmissionUrl,
+            user: Lampa.Storage.get('lmetorrenttransmissionUser', ''),
+            pass: Lampa.Storage.get('lmetorrenttransmissionPass', '')
+        };
+
+        const headers = {
+            'Authorization': 'Basic ' + btoa(config.user + ':' + config.pass),
+            'Content-Type': 'application/json'
+        };
+
+        if (transmissionSessionId) {
+            headers['X-Transmission-Session-Id'] = transmissionSessionId;
         }
 
-        // ===== ДОБАВЛЕНИЕ В TRANSMISSION =====
-        async _addToTransmission(magnet, title, movie) {
-            try {
-                const config = this._getConfig();
-                const url = `${config.transmissionUrl}/transmission/rpc`;
-                const headers = this._getHeaders(config);
-
-                const data = {
-                    method: 'torrent-add',
-                    arguments: {
-                        filename: magnet,
-                        paused: false,
-                        labels: movie ? [`movie/${movie.id}`] : []
-                    }
-                };
-
-                const response = await this._request(url, headers, data);
-                
-                if (response && response.result === 'success') {
-                    Lampa.Bell.push({ text: '✅ Торрент добавлен' });
-                    
-                    // Сохраняем Session ID если он пришел
-                    if (response.session_id) {
-                        Lampa.Storage.set('torrentbridge_session_id', response.session_id);
-                    }
-                    
-                    return response;
-                } else {
-                    throw new Error('Не удалось добавить торрент');
-                }
-            } catch (e) {
-                console.error('[Bridge] Error adding torrent:', e);
-                throw e;
-            }
-        }
-
-        // ===== ДОБАВЛЕНИЕ И СТРИМ =====
-        async _addAndStream(magnet, title, movie) {
-            const result = await this._addToTransmission(magnet, title, movie);
+        return new Promise((resolve, reject) => {
+            const network = new Lampa.Reguest();
+            network.timeout(10000);
             
-            if (result && result.result === 'success') {
-                setTimeout(() => {
-                    this._streamViaTorrServer(magnet, title);
-                }, 1000);
-            }
-        }
-
-        // ===== СТРИМ ЧЕРЕЗ TORRSERVER =====
-        async _streamViaTorrServer(magnet, title) {
-            try {
-                const config = this._getConfig();
-                const torrserverUrl = config.torrserverUrl;
-                
-                // Добавляем в TorrServer
-                const addUrl = `${torrserverUrl}/torrent/add?link=${encodeURIComponent(magnet)}`;
-                const addResponse = await this._request(addUrl, {}, null, 'GET');
-                
-                if (!addResponse || !addResponse.hash) {
-                    throw new Error('Ошибка TorrServer');
+            const body = JSON.stringify({
+                method: 'torrent-get',
+                arguments: {
+                    ids: [torrentId],
+                    fields: ['hashString', 'name', 'id']
                 }
+            });
+
+            const makeRequest = (sessionId) => {
+                const reqHeaders = {...headers};
+                if (sessionId) {
+                    reqHeaders['X-Transmission-Session-Id'] = sessionId;
+                }
+                
+                network.quiet(
+                    `${CONFIG.transmissionUrl}${CONFIG.transmissionPath}`,
+                    (response) => {
+                        if (typeof response === 'string') {
+                            response = JSON.parse(response);
+                        }
+                        
+                        if (response.arguments && response.arguments.torrents && response.arguments.torrents.length > 0) {
+                            const torrent = response.arguments.torrents[0];
+                            resolve({
+                                hash: torrent.hashString,
+                                name: torrent.name,
+                                id: torrent.id
+                            });
+                        } else {
+                            reject(new Error('Torrent not found'));
+                        }
+                    },
+                    (error) => {
+                        if (error.status === 409) {
+                            const newSessionId = error.getResponseHeader('X-Transmission-Session-Id');
+                            if (newSessionId) {
+                                transmissionSessionId = newSessionId;
+                                makeRequest(newSessionId);
+                            } else {
+                                reject(new Error('Failed to get session ID'));
+                            }
+                        } else {
+                            reject(error);
+                        }
+                    },
+                    body,
+                    {
+                        headers: reqHeaders,
+                        type: 'POST',
+                        dataType: 'json'
+                    }
+                );
+            };
+
+            makeRequest(transmissionSessionId);
+        });
+    }
+
+    /**
+     * Добавление торрента в TorrServer
+     */
+    async function addToTorrServer(hash, title) {
+        const magnet = `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(title)}`;
+        
+        return new Promise((resolve, reject) => {
+            const network = new Lampa.Reguest();
+            network.timeout(15000);
+            
+            network.quiet(
+                `${CONFIG.torrServerUrl}/torrents`,
+                (response) => {
+                    if (typeof response === 'string') {
+                        response = JSON.parse(response);
+                    }
+                    resolve(response);
+                },
+                (error) => {
+                    reject(error);
+                },
+                JSON.stringify({
+                    link: magnet,
+                    title: title,
+                    poster: '',
+                    save_to: ''
+                }),
+                {
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    type: 'POST',
+                    dataType: 'json'
+                }
+            );
+        });
+    }
+
+    /**
+     * Получение списка файлов из TorrServer
+     */
+    async function getTorrServerFiles(hash) {
+        return new Promise((resolve, reject) => {
+            const network = new Lampa.Reguest();
+            network.timeout(10000);
+            
+            network.quiet(
+                `${CONFIG.torrServerUrl}/torrents/${hash}/files`,
+                (response) => {
+                    if (typeof response === 'string') {
+                        response = JSON.parse(response);
+                    }
+                    resolve(response);
+                },
+                (error) => {
+                    reject(error);
+                },
+                null,
+                {
+                    type: 'GET',
+                    dataType: 'json'
+                }
+            );
+        });
+    }
+
+    /**
+     * Получение URL потока для воспроизведения
+     */
+    function getStreamUrl(hash, fileIndex = 0) {
+        return `${CONFIG.torrServerUrl}/stream?link=${hash}&index=${fileIndex}&play=1`;
+    }
+
+    /**
+     * Запуск воспроизведения через Lampa.Player
+     */
+    function playOnTorrServer(torrentData) {
+        Lampa.Activity.loader(true);
+        
+        // Показываем уведомление о начале
+        Lampa.Bell.push({
+            text: 'Подключение к TorrServer...'
+        });
+
+        getTorrentHash(torrentData.id)
+            .then(async (torrentInfo) => {
+                console.log('TSL', 'Torrent info:', torrentInfo);
+                
+                // Добавляем торрент в TorrServer
+                await addToTorrServer(torrentInfo.hash, torrentInfo.name);
+                
+                Lampa.Bell.push({
+                    text: 'Торрент добавлен, получение потока...'
+                });
 
                 // Получаем список файлов
-                const filesUrl = `${torrserverUrl}/torrent/files?hash=${addResponse.hash}`;
-                const filesResponse = await this._request(filesUrl, {}, null, 'GET');
+                const files = await getTorrServerFiles(torrentInfo.hash);
                 
-                if (!filesResponse || !filesResponse.files || filesResponse.files.length === 0) {
-                    throw new Error('Нет файлов');
+                if (!files || files.length === 0) {
+                    throw new Error('No files in torrent');
                 }
 
-                // Ищем видео
-                const videoExts = ['mp4', 'mkv', 'avi', 'mov', 'webm', 'm4v', 'ts'];
-                let videoFile = filesResponse.files.find(f => {
-                    const ext = f.name.split('.').pop().toLowerCase();
-                    return videoExts.includes(ext);
+                // Фильтруем медиафайлы
+                const mediaExtensions = ['mp4', 'mkv', 'avi', 'mov', 'webm', 'ts', 'm4v', 'mpg', 'mpeg'];
+                const mediaFiles = files.filter(file => {
+                    const ext = String(file.name || '').split('.').pop().toLowerCase();
+                    return mediaExtensions.includes(ext);
                 });
 
-                if (!videoFile) {
-                    videoFile = filesResponse.files[0];
+                if (mediaFiles.length === 0) {
+                    throw new Error('No media files found');
                 }
 
-                const streamUrl = `${torrserverUrl}/stream/${addResponse.hash}/${videoFile.index}`;
-                
-                Lampa.Player.play({
-                    url: streamUrl,
-                    title: title || 'Фильм',
-                    timeline: false
+                // Если несколько файлов — показываем выбор
+                if (mediaFiles.length > 1) {
+                    const fileItems = mediaFiles.map((file, index) => ({
+                        title: String(file.name).split('/').pop(),
+                        file: file,
+                        index: index
+                    }));
+
+                    Lampa.Select.show({
+                        title: 'Выберите файл для просмотра',
+                        items: fileItems,
+                        onSelect: (item) => {
+                            const streamUrl = getStreamUrl(torrentInfo.hash, item.index);
+                            playStream(streamUrl, torrentInfo.name);
+                        },
+                        onBack: () => {
+                            Lampa.Controller.toggle('content');
+                        }
+                    });
+                } else {
+                    // Один файл — сразу запускаем
+                    const streamUrl = getStreamUrl(torrentInfo.hash, 0);
+                    playStream(streamUrl, torrentInfo.name);
+                }
+            })
+            .catch((error) => {
+                console.error('TSL', 'Error playing torrent:', error);
+                Lampa.Activity.loader(false);
+                Lampa.Bell.push({
+                    text: 'Ошибка: ' + (error.message || 'Failed to play')
                 });
+            });
+    }
+
+    /**
+     * Запуск воспроизведения потока
+     */
+    function playStream(streamUrl, title) {
+        Lampa.Activity.loader(false);
+        
+        // Используем Lampa.Player для внешнего плеера
+        Lampa.Player.play({
+            url: streamUrl,
+            title: title,
+            timeline: false
+        });
+    }
+
+    /**
+     * Перехват меню действий Torrent Manager
+     */
+    function hookTorrentMenu() {
+        // Перехватываем оригинальную функцию showTorrentMenu
+        const originalShowTorrentMenu = window.showTorrentMenu;
+        
+        if (originalShowTorrentMenu) {
+            window.showTorrentMenu = function(torrentData, allTorrents) {
+                // Добавляем пункт меню
+                const enabled = Lampa.Controller.enabled().name;
                 
-                Lampa.Bell.push({ text: '✅ Стрим' });
-            } catch (e) {
-                console.error('[Bridge] TorrServer error:', e);
-                Lampa.Bell.push({ text: '❌ Ошибка стрима' });
-            }
-        }
-
-        // ===== ВОСПРОИЗВЕДЕНИЕ ЛОКАЛЬНОГО ФАЙЛА =====
-        async _playLocal(torrent, title) {
-            const localPath = Lampa.Storage.get(COMPONENT + 'LocalPath') || '';
-            
-            if (!localPath) {
-                Lampa.Bell.push({ text: '⚠️ Укажите локальный путь в настройках' });
-                return;
-            }
-
-            const videoFiles = torrent.files.filter(f => {
-                const ext = f.name.split('.').pop().toLowerCase();
-                return ['mp4', 'mkv', 'avi', 'mov', 'webm', 'm4v', 'ts'].includes(ext);
-            });
-
-            if (videoFiles.length === 0) {
-                Lampa.Bell.push({ text: '❌ Нет видео' });
-                return;
-            }
-
-            let file = videoFiles[0];
-            if (videoFiles.length > 1) {
-                file = await this._selectFile(videoFiles);
-                if (!file) return;
-            }
-
-            const url = localPath + encodeURIComponent(file.name);
-            const name = file.name.split('/').pop();
-
-            Lampa.Player.play({
-                url: url,
-                title: title || name,
-                timeline: false
-            });
-
-            Lampa.Bell.push({ text: '✅ Локально' });
-        }
-
-        // ===== ВЫБОР ФАЙЛА =====
-        _selectFile(files) {
-            return new Promise((resolve) => {
-                const items = files.map(f => ({
-                    title: f.name.split('/').pop() || f.name,
-                    file: f
-                }));
-
                 Lampa.Select.show({
-                    title: 'Выберите файл',
-                    items: items,
-                    onSelect: (item) => resolve(item.file)
-                });
-            });
-        }
-
-        // ===== ПОКАЗ ВАРИАНТОВ =====
-        _showOptions(torrent, magnet, title) {
-            const percent = Math.round(torrent.percentDone * 100);
-            const items = [
-                {
-                    title: '▶️ Стримить',
-                    action: 'stream'
-                },
-                {
-                    title: `⏳ Дождаться (${percent}%)`,
-                    action: 'wait'
-                }
-            ];
-
-            Lampa.Select.show({
-                title: `Торрент в очереди`,
-                items: items,
-                onSelect: async (item) => {
-                    if (item.action === 'stream') {
-                        await this._streamViaTorrServer(magnet, title);
-                    } else if (item.action === 'wait') {
-                        this._waitForDownload(torrent, title);
+                    title: torrentData.name,
+                    items: [
+                        // Существующие пункты
+                        { title: 'Resume', action: 'resume' },
+                        { title: 'Pause', action: 'pause' },
+                        { title: 'Delete', action: 'delete' },
+                        // Наш новый пункт
+                        { title: '🎬 Play on TorrServer', action: 'play_torrserver' },
+                        { title: 'Delete with files', action: 'delete', deleteFiles: true }
+                    ],
+                    onBack: () => {
+                        const currentController = Lampa.Controller.enabled();
+                        if (currentController && currentController.name !== enabled) {
+                            Lampa.Controller.toggle(enabled);
+                        } else {
+                            Lampa.Controller.toggle('menu');
+                        }
+                    },
+                    onSelect: (action) => {
+                        if (action.action === 'play_torrserver') {
+                            playOnTorrServer(torrentData);
+                        } else if (action.action === 'resume') {
+                            // Оригинальная логика resume
+                            executeClientMethod(Lampa.Storage.field('lmetorrentSelect'), 'SendCommand', [action, torrentData], {silentAuth: true});
+                        } else if (action.action === 'pause') {
+                            // Оригинальная логика pause
+                            executeClientMethod(Lampa.Storage.field('lmetorrentSelect'), 'SendCommand', [action, torrentData], {silentAuth: true});
+                        } else if (action.action === 'delete') {
+                            // Оригинальная логика delete
+                            executeClientMethod(Lampa.Storage.field('lmetorrentSelect'), 'SendCommand', [action, torrentData], {silentAuth: true});
+                        }
                     }
-                }
-            });
-        }
-
-        // ===== ОЖИДАНИЕ СКАЧИВАНИЯ =====
-        async _waitForDownload(torrent, title) {
-            Lampa.Bell.push({ text: '⏳ Ожидание...' });
-
-            let attempts = 0;
-            const maxAttempts = 120;
-
-            const check = async () => {
-                attempts++;
-                const torrents = await this._getTorrents();
-                const current = torrents.find(t => t.id === torrent.id);
-
-                if (!current) {
-                    Lampa.Bell.push({ text: '❌ Торрент не найден' });
-                    return;
-                }
-
-                if (current.percentDone >= 0.99) {
-                    await this._playLocal(current, title);
-                    return;
-                }
-
-                if (attempts >= maxAttempts) {
-                    Lampa.Bell.push({ text: '⏱ Время вышло' });
-                    return;
-                }
-
-                setTimeout(check, 5000);
-            };
-
-            await check();
-        }
-
-        // ===== УНИВЕРСАЛЬНЫЙ ЗАПРОС =====
-        _request(url, headers, data, method = 'POST') {
-            return new Promise((resolve, reject) => {
-                const req = new Lampa.Reguest();
-                const options = {
-                    headers: headers || {},
-                    type: method,
-                    dataType: 'json'
-                };
-
-                req.quiet(url, resolve, reject, data ? JSON.stringify(data) : null, options);
-            });
-        }
-
-        // ===== ПОЛУЧЕНИЕ КОНФИГА =====
-        _getConfig() {
-            return {
-                transmissionUrl: Lampa.Storage.get('lmetorrenttransmissionUrl') || 'http://192.168.1.101:9091',
-                transmissionUser: Lampa.Storage.get('lmetorrenttransmissionUser') || 'admin',
-                transmissionPass: Lampa.Storage.get('lmetorrenttransmissionPass') || 'admin',
-                torrserverUrl: Lampa.Storage.get('torrserver_url') || 'http://192.168.1.101:8090'
+                });
             };
         }
     }
 
-    // ===== ЗАПУСК =====
+    /**
+     * Инициализация плагина
+     */
     function init() {
+        // Ждём полной загрузки Lampa
         if (window.appready) {
-            if (!window.torrentbridge_loaded) {
-                window.torrentbridge_loaded = true;
-                new TorrentBridge();
-            }
+            hookTorrentMenu();
         } else {
             Lampa.Listener.follow('app', (e) => {
-                if (e.type === 'ready' && !window.torrentbridge_loaded) {
-                    window.torrentbridge_loaded = true;
-                    new TorrentBridge();
+                if (e.type === 'ready') {
+                    setTimeout(hookTorrentMenu, 1000);
                 }
             });
         }
     }
 
+    // Запуск плагина
     init();
-
 })();
