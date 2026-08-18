@@ -1,6 +1,6 @@
 /**
  * Torrent Bridge - плагин для запуска торрентов из Torrent Manager через TorrServer
- * Версия 1.0.5 - с прямым перехватом showTorrentMenu
+ * Версия 1.0.8 - с правильным чтением настроек TorrServer
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '1.0.5',
+        version: '1.0.8',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         description: 'Launch torrents from Torrent Manager via TorrServer',
@@ -16,10 +16,9 @@
         icon: '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>'
     };
 
-    const TORRSERVER_URL = 'http://192.168.1.101:8090';
-    
     let transmissionSessionId = null;
     let lastTorrentData = null;
+    let lastFocusedTorrent = null;
 
     function log(...args) {
         console.log('[TorrentBridge]', ...args);
@@ -33,6 +32,43 @@
         Lampa.Storage.set(MANIFEST.component + '_enabled', value === true);
     }
 
+    /**
+     * Получение URL TorrServer из настроек Lampa
+     * Использует правильный ключ: torrserver_url
+     */
+    function getTorrServerUrl() {
+        // Основной ключ из консоли
+        const mainUrl = Lampa.Storage.get('torrserver_url', '');
+        
+        if (mainUrl && String(mainUrl).trim()) {
+            let url = String(mainUrl).trim();
+            url = url.replace(/\/+$/, '');
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                url = 'http://' + url;
+            }
+            log('Using TorrServer URL:', url);
+            return url;
+        }
+        
+        // Запасной ключ
+        const altUrl = Lampa.Storage.get('torrserverUrl', '');
+        if (altUrl && String(altUrl).trim()) {
+            let url = String(altUrl).trim();
+            url = url.replace(/\/+$/, '');
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                url = 'http://' + url;
+            }
+            log('Using alt TorrServer URL:', url);
+            return url;
+        }
+        
+        log('TorrServer URL not found, using default');
+        return 'http://192.168.1.101:8090';
+    }
+
+    /**
+     * Получение конфигурации Transmission
+     */
     function getTransmissionConfig() {
         return {
             url: Lampa.Storage.get('lmetorrenttransmissionUrl', 'http://192.168.1.112:9091'),
@@ -42,6 +78,9 @@
         };
     }
 
+    /**
+     * Запрос к Transmission через Lampa.Reguest (как в Torrent Manager)
+     */
     function transmissionRequest(method, args, retry = true) {
         return new Promise((resolve, reject) => {
             const config = getTransmissionConfig();
@@ -105,34 +144,61 @@
         });
     }
 
+    /**
+     * Запрос к TorrServer через Lampa.Request (как в Lampa)
+     */
     function torrServerRequest(path, method = 'GET', body = null) {
         return new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.timeout = 15000;
+            const torrServerUrl = getTorrServerUrl();
+            const url = `${torrServerUrl}${path}`;
             
-            xhr.open(method, `${TORRSERVER_URL}${path}`, true);
+            log('TorrServer request:', method, url);
             
-            if (body) {
-                xhr.setRequestHeader('Content-Type', 'application/json');
-            }
-            
-            xhr.onload = function() {
-                if (xhr.status >= 200 && xhr.status < 300) {
-                    resolve(xhr.responseText);
-                } else {
-                    reject(new Error('HTTP ' + xhr.status + ': ' + xhr.statusText));
+            // Используем Lampa.Request как в Lampa
+            if (Lampa.Request) {
+                const request = new Lampa.Request();
+                
+                const options = {
+                    type: method,
+                    dataType: 'text'
+                };
+                
+                if (body) {
+                    options.headers = {
+                        'Content-Type': 'application/json'
+                    };
                 }
-            };
-            
-            xhr.onerror = function() {
-                reject(new Error('Network error'));
-            };
-            
-            xhr.ontimeout = function() {
-                reject(new Error('Timeout'));
-            };
-            
-            xhr.send(body ? JSON.stringify(body) : null);
+                
+                request.quiet(
+                    url,
+                    (response) => {
+                        log('TorrServer response type:', typeof response);
+                        resolve(response);
+                    },
+                    (error) => {
+                        log('TorrServer error:', error);
+                        reject(error);
+                    },
+                    body ? JSON.stringify(body) : null,
+                    options
+                );
+            } else {
+                // Fallback на jQuery ajax
+                $.ajax({
+                    url: url,
+                    method: method,
+                    data: body ? JSON.stringify(body) : null,
+                    contentType: body ? 'application/json' : undefined,
+                    dataType: 'text',
+                    timeout: 15000,
+                    success: (response) => {
+                        resolve(response);
+                    },
+                    error: (xhr, status, error) => {
+                        reject(new Error(error || status));
+                    }
+                });
+            }
         });
     }
 
@@ -178,7 +244,10 @@
     async function getTorrServerFiles(hash) {
         try {
             const response = await torrServerRequest(`/torrents/${hash}/files`, 'GET');
-            return response ? JSON.parse(response) : [];
+            if (typeof response === 'string') {
+                return JSON.parse(response);
+            }
+            return response || [];
         } catch (e) {
             log('Error getting files:', e);
             return [];
@@ -186,7 +255,8 @@
     }
 
     function getStreamUrl(hash, fileIndex = 0) {
-        return `${TORRSERVER_URL}/stream?link=${hash}&index=${fileIndex}&play=1`;
+        const torrServerUrl = getTorrServerUrl();
+        return `${torrServerUrl}/stream?link=${hash}&index=${fileIndex}&play=1`;
     }
 
     function isMediaFile(filename) {
@@ -285,6 +355,9 @@
 
     // Тестирование подключения
     async function testConnection() {
+        const torrServerUrl = getTorrServerUrl();
+        log('Testing TorrServer at:', torrServerUrl);
+        
         Lampa.Bell.push({ text: 'Проверка TorrServer...' });
         
         try {
@@ -292,26 +365,29 @@
             log('TorrServer echo response:', response);
             
             if (response && String(response).includes('MatriX')) {
-                Lampa.Bell.push({ text: 'TorrServer доступен (MatriX)' });
+                Lampa.Bell.push({ text: '✅ TorrServer доступен' });
             } else {
-                Lampa.Bell.push({ text: 'TorrServer ответил: ' + response });
+                Lampa.Bell.push({ text: '⚠️ TorrServer ответил: ' + response });
             }
         } catch (e) {
             log('TorrServer test failed:', e);
             Lampa.Bell.push({ 
-                text: 'TorrServer недоступен: ' + e.message 
+                text: '❌ TorrServer недоступен: ' + (e.message || e.statusText || 'unknown')
             });
         }
 
+        const config = getTransmissionConfig();
+        log('Testing Transmission at:', config.url);
+        
         Lampa.Bell.push({ text: 'Проверка Transmission...' });
         
         try {
             const response = await transmissionRequest('session-get', {});
             log('Transmission session:', response);
-            Lampa.Bell.push({ text: 'Transmission доступен' });
+            Lampa.Bell.push({ text: '✅ Transmission доступен' });
         } catch (e) {
             log('Transmission test failed:', e);
-            Lampa.Bell.push({ text: 'Transmission недоступен: ' + e.message });
+            Lampa.Bell.push({ text: '❌ Transmission недоступен: ' + (e.message || 'unknown') });
         }
     }
 
@@ -364,39 +440,9 @@
         });
     }
 
-    // Прямой перехват showTorrentMenu
-    function hookShowTorrentMenu() {
-        // Проверяем, есть ли showTorrentMenu в глобальной области
-        if (typeof window.showTorrentMenu === 'function') {
-            const originalShowTorrentMenu = window.showTorrentMenu;
-            
-            window.showTorrentMenu = function(torrentData, allTorrents) {
-                log('showTorrentMenu called with:', torrentData);
-                
-                // Сохраняем данные торрента
-                lastTorrentData = torrentData;
-                
-                // Вызываем оригинальную функцию
-                return originalShowTorrentMenu(torrentData, allTorrents);
-            };
-            
-            log('Hooked window.showTorrentMenu');
-            return true;
-        }
-        
-        // Пробуем найти через Lampa
-        if (Lampa && Lampa.Select) {
-            log('Trying to hook via Lampa.Select.show');
-            hookSelectShow();
-            return true;
-        }
-        
-        log('showTorrentMenu not found');
-        return false;
-    }
-
-    // Перехват Lampa.Select.show
-    function hookSelectShow() {
+    // Перехват меню торрента
+    function hookTorrentMenu() {
+        // Перехватываем Lampa.Select.show
         const originalSelectShow = Lampa.Select.show;
         
         Lampa.Select.show = function(options) {
@@ -424,8 +470,11 @@
                 
                 options.onSelect = function(item) {
                     if (item.action === 'play_torrserver') {
-                        if (lastTorrentData && lastTorrentData.id) {
-                            playTorrent(lastTorrentData);
+                        // Пытаемся получить данные из разных источников
+                        const torrentData = getTorrentData();
+                        
+                        if (torrentData && torrentData.id) {
+                            playTorrent(torrentData);
                         } else {
                             Lampa.Bell.push({ 
                                 text: 'Нет данных торрента. Нажмите на торрент ещё раз.' 
@@ -443,18 +492,38 @@
         log('Hooked Lampa.Select.show');
     }
 
+    // Получение данных торрента
+    function getTorrentData() {
+        // 1. Из lastTorrentData
+        if (lastTorrentData && lastTorrentData.id) {
+            return lastTorrentData;
+        }
+
+        // 2. Из TorrentStateManager
+        if (window.TorrentStateManager && window.TorrentStateManager.torrents) {
+            const torrents = window.TorrentStateManager.torrents;
+            if (torrents.length > 0) {
+                lastTorrentData = torrents[0];
+                return torrents[0];
+            }
+        }
+
+        return null;
+    }
+
     // Инициализация
     function init() {
         log('Initializing Torrent Bridge...');
         log('Enabled state:', isPluginEnabled());
+        log('TorrServer URL:', getTorrServerUrl());
+        log('Transmission config:', getTransmissionConfig());
 
         createSettingsMenu();
         Lampa.Manifest.plugins = MANIFEST;
 
-        // Ждём загрузки Torrent Manager
         setTimeout(() => {
-            const hooked = hookShowTorrentMenu();
-            log('Hook result:', hooked);
+            hookTorrentMenu();
+            log('Hooked torrent menu');
         }, 5000);
 
         log('Torrent Bridge initialized');
