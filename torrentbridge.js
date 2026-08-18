@@ -1,26 +1,37 @@
 /**
- * TorrServer Launcher for Torrent Manager
- * Добавляет пункт "Play on TorrServer" в меню торрентов
+ * Torrent Bridge - плагин для запуска торрентов из Torrent Manager через TorrServer
+ * 
+ * Добавляет пункт меню в настройки Lampa и пункт "Play on TorrServer" в меню торрентов
  */
 
 (function () {
     'use strict';
 
-    // Конфигурация
+    // Конфигурация по умолчанию
+    const MANIFEST = {
+        type: 'other',
+        version: '1.0.0',
+        author: 'Torrent Bridge',
+        name: 'Torrent Bridge',
+        description: 'Launch torrents from Torrent Manager via TorrServer',
+        component: 'torrentbridge',
+        icon: '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>'
+    };
+
     const TORRSERVER_URL = 'http://192.168.1.101:8090';
     
     let transmissionSessionId = null;
-    let originalSelectShow = null;
+    let pluginEnabled = false;
 
     /**
      * Логирование
      */
     function log(...args) {
-        console.log('TSL', ...args);
+        console.log('[TorrentBridge]', ...args);
     }
 
     /**
-     * Получение конфигурации Transmission из хранилища Lampa
+     * Получение конфигурации Transmission
      */
     function getTransmissionConfig() {
         return {
@@ -34,7 +45,7 @@
     /**
      * Выполнение запроса к Transmission RPC
      */
-    function transmissionRequest(method, arguments, retry = true) {
+    function transmissionRequest(method, args, retry = true) {
         return new Promise((resolve, reject) => {
             const config = getTransmissionConfig();
             
@@ -49,7 +60,7 @@
 
             const body = JSON.stringify({
                 method: method,
-                arguments: arguments
+                arguments: args
             });
 
             const makeRequest = () => {
@@ -70,12 +81,11 @@
                         resolve(response);
                     },
                     (error) => {
-                        // Обработка 409 — нужен новый session ID
                         if (error.status === 409 && retry) {
                             const newSessionId = error.getResponseHeader ? error.getResponseHeader('X-Transmission-Session-Id') : null;
                             if (newSessionId) {
                                 transmissionSessionId = newSessionId;
-                                transmissionRequest(method, arguments, false)
+                                transmissionRequest(method, args, false)
                                     .then(resolve)
                                     .catch(reject);
                             } else {
@@ -233,6 +243,11 @@
      * Основная функция запуска торрента
      */
     async function playTorrent(torrentData) {
+        if (!pluginEnabled) {
+            Lampa.Bell.push({ text: 'Torrent Bridge не активирован' });
+            return;
+        }
+
         Lampa.Activity.loader(true);
         Lampa.Bell.push({ text: 'Подключение к TorrServer...' });
 
@@ -315,8 +330,10 @@
     }
 
     /**
-     * Перехват Lampa.Select.show для добавления пункта меню
+     * Перехват меню торрента через Lampa.Select.show
      */
+    let originalSelectShow = null;
+
     function hookSelectShow() {
         if (originalSelectShow) return;
 
@@ -324,11 +341,9 @@
 
         Lampa.Select.show = function(options) {
             // Проверяем, что это меню торрента
-            const title = options.title || '';
             const items = options.items || [];
             
             // Определяем, является ли это меню Torrent Manager
-            // По наличию характерных пунктов меню
             const hasResume = items.some(item => 
                 item.action === 'resume' || 
                 (item.title && item.title.toLowerCase().includes('возобновить'))
@@ -345,11 +360,7 @@
             );
 
             // Это меню торрента
-            if (hasResume && hasPause && hasDelete) {
-                // Находим данные торрента
-                // Они могут быть в замыкании, но мы можем получить их из items
-                // или из контекста вызова
-                
+            if (hasResume && hasPause && hasDelete && pluginEnabled) {
                 // Добавляем пункт "Play on TorrServer"
                 const playItem = {
                     title: '🎬 Play on TorrServer',
@@ -357,7 +368,7 @@
                     separator: true
                 };
 
-                // Вставляем после "Открыть" если есть, иначе после "Удалить"
+                // Находим позицию для вставки
                 const openIndex = items.findIndex(item => 
                     item.action === 'card' || 
                     (item.title && item.title.toLowerCase().includes('открыть'))
@@ -372,11 +383,7 @@
                 
                 options.onSelect = function(item) {
                     if (item.action === 'play_torrserver') {
-                        // Нам нужны данные торрента
-                        // Они должны быть в замыкании, но мы можем получить их
-                        // через глобальное состояние Torrent Manager
-                        
-                        // Пробуем получить данные из разных источников
+                        // Получаем данные торрента
                         const torrentData = getTorrentData();
                         
                         if (torrentData) {
@@ -403,13 +410,11 @@
     function getTorrentData() {
         // Пробуем получить из глобального состояния Torrent Manager
         if (window.TorrentStateManager && window.TorrentStateManager.torrents) {
-            // Находим последний выбранный торрент
-            // Это не идеально, но лучше чем ничего
             const torrents = window.TorrentStateManager.torrents;
             return torrents[0] || null;
         }
 
-        // Альтернативный способ — через Lampa.Activity
+        // Пробуем через Lampa.Activity
         const activity = Lampa.Activity.active();
         if (activity && activity.movie) {
             return activity.movie;
@@ -419,26 +424,130 @@
     }
 
     /**
-     * Инициализация
+     * Создание пункта меню в настройках
+     */
+    function createSettingsMenu() {
+        // Регистрируем компонент в настройках
+        Lampa.SettingsApi.addComponent({
+            component: MANIFEST.component,
+            name: MANIFEST.name,
+            icon: MANIFEST.icon
+        });
+
+        // Добавляем параметр активации
+        Lampa.SettingsApi.addParam({
+            component: MANIFEST.component,
+            param: {
+                name: MANIFEST.component + '_enabled',
+                type: 'trigger',
+                default: false
+            },
+            field: {
+                name: 'Активировать плагин',
+                description: 'Включает пункт "Play on TorrServer" в меню торрентов'
+            },
+            onChange: function(value) {
+                pluginEnabled = value === true;
+                Lampa.Storage.set(MANIFEST.component + '_enabled', pluginEnabled);
+                log('Plugin enabled:', pluginEnabled);
+                
+                if (pluginEnabled) {
+                    Lampa.Bell.push({ text: 'Torrent Bridge активирован' });
+                } else {
+                    Lampa.Bell.push({ text: 'Torrent Bridge деактивирован' });
+                }
+                
+                Lampa.Settings.update();
+            }
+        });
+
+        // Добавляем кнопку тестирования
+        Lampa.SettingsApi.addParam({
+            component: MANIFEST.component,
+            param: {
+                name: MANIFEST.component + '_test',
+                type: 'button'
+            },
+            field: {
+                name: 'Проверить подключение'
+            },
+            onChange: function() {
+                testConnection();
+            }
+        });
+    }
+
+    /**
+     * Тестирование подключения
+     */
+    async function testConnection() {
+        Lampa.Bell.push({ text: 'Проверка TorrServer...' });
+        
+        try {
+            const response = await torrServerRequest('/echo', 'GET');
+            log('TorrServer echo:', response);
+            Lampa.Bell.push({ text: 'TorrServer доступен' });
+        } catch (e) {
+            log('TorrServer test failed:', e);
+            Lampa.Bell.push({ text: 'TorrServer недоступен: ' + e.message });
+        }
+
+        Lampa.Bell.push({ text: 'Проверка Transmission...' });
+        
+        try {
+            const response = await transmissionRequest('session-get', {});
+            log('Transmission session:', response);
+            Lampa.Bell.push({ text: 'Transmission доступен' });
+        } catch (e) {
+            log('Transmission test failed:', e);
+            Lampa.Bell.push({ text: 'Transmission недоступен: ' + e.message });
+        }
+    }
+
+    /**
+     * Инициализация плагина
      */
     function init() {
-        log('Initializing TorrServer Launcher...');
+        log('Initializing Torrent Bridge...');
 
+        // Восстанавливаем состояние
+        pluginEnabled = Lampa.Storage.get(MANIFEST.component + '_enabled', false) === true;
+        log('Plugin enabled state:', pluginEnabled);
+
+        // Создаём меню в настройках
+        createSettingsMenu();
+
+        // Регистрируем плагин
+        Lampa.Manifest.plugins = MANIFEST;
+
+        // Устанавливаем перехват меню
         if (window.appready) {
             hookSelectShow();
-            log('Hooked Lampa.Select.show');
         } else {
             Lampa.Listener.follow('app', (e) => {
                 if (e.type === 'ready') {
                     setTimeout(() => {
                         hookSelectShow();
-                        log('Hooked Lampa.Select.show (delayed)');
                     }, 2000);
                 }
             });
         }
+
+        log('Torrent Bridge initialized');
     }
 
-    // Запуск
-    init();
+    // Запуск плагина
+    if (!window.plugin_torrentbridge_ready) {
+        window.plugin_torrentbridge_ready = true;
+        
+        if (window.appready) {
+            init();
+        } else {
+            Lampa.Listener.follow('app', (e) => {
+                if (e.type === 'ready') {
+                    init();
+                }
+            });
+        }
+    }
 })();
