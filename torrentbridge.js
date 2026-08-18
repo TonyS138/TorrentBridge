@@ -1,14 +1,13 @@
 // =====================================================
-// Torrent Bridge Plugin
-// Минималистичный мост между TorrentManager и TorrServer
-// Версия: 1.0
+// Torrent Bridge Plugin - ИСПРАВЛЕННАЯ ВЕРСИЯ
+// Версия: 1.1
 // =====================================================
 
 (function() {
     'use strict';
 
     const PLUGIN_NAME = 'Torrent Bridge';
-    const PLUGIN_VERSION = '1.0';
+    const PLUGIN_VERSION = '1.1';
 
     // ===== КОНФИГУРАЦИЯ =====
     const CONFIG = {
@@ -23,24 +22,22 @@
             return Lampa.Storage.get('lmetorrenttransmissionPass') || 'admin';
         },
         get torrserverUrl() {
-            // Берем из настроек TorrServer плагина Lampa
             return Lampa.Storage.get('torrserver_url') || 'http://192.168.1.101:8090';
         },
         get localPath() {
             return Lampa.Storage.get('torrentbridge_local_path') || 'http://192.168.1.112:8080/';
         },
-        mode: 'hybrid' // hybrid | stream | download
+        mode: 'hybrid'
     };
 
-    // ===== РАБОТА С TRANSMISSION (через LME TorrentManager) =====
-    // Используем готовые методы из LME TorrentManager
+    // ===== РАБОТА С TRANSMISSION =====
     function getTransmissionClient() {
         // Проверяем, доступен ли Transmission через LME TorrentManager
         if (typeof Transmission !== 'undefined' && Transmission.auth) {
             return Transmission;
         }
 
-        // Если нет - создаем свой минимальный клиент
+        // Создаем свой минимальный клиент
         return {
             sessionId: null,
             sessionKey: 'torrentbridge_transmission_session',
@@ -141,12 +138,6 @@
 
     // ===== РАБОТА С TORRSERVER =====
     function getTorrServerClient() {
-        // Используем встроенный TorrServer плагин если есть
-        if (typeof TorrServer !== 'undefined') {
-            return TorrServer;
-        }
-
-        // Или создаем свой
         return {
             addTorrent: async function(magnet) {
                 const config = CONFIG;
@@ -182,7 +173,6 @@
                         return null;
                     }
 
-                    // Ищем видеофайл
                     const videoExts = ['mp4', 'mkv', 'avi', 'mov', 'webm', 'm4v', 'ts'];
                     let videoFile = response.files.find(f => {
                         const ext = f.name.split('.').pop().toLowerCase();
@@ -225,7 +215,7 @@
             Lampa.SettingsApi.addComponent({
                 component: 'torrentbridge',
                 name: 'Torrent Bridge',
-                icon: '<svg>...</svg>'
+                icon: '<svg width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>'
             });
 
             // Настройка локального пути
@@ -234,13 +224,20 @@
                 param: {
                     name: 'torrentbridge_local_path',
                     type: 'input',
-                    default: 'http://192.168.1.112:8080/'
+                    default: ''  // Пустая строка, а не вычисляемое значение
                 },
                 field: {
                     name: 'Локальный путь к файлам (для плеера)'
                 },
-                onChange: (value) => {
+                onChange: function(value) {
                     Lampa.Storage.set('torrentbridge_local_path', value);
+                },
+                onRender: function(item) {
+                    // Устанавливаем сохраненное значение
+                    const saved = Lampa.Storage.get('torrentbridge_local_path');
+                    if (saved) {
+                        item.find('input').val(saved);
+                    }
                 }
             });
 
@@ -260,14 +257,14 @@
                 field: {
                     name: 'Режим работы'
                 },
-                onChange: (value) => {
+                onChange: function(value) {
                     Lampa.Storage.set('torrentbridge_mode', value);
                 }
             });
         }
 
         _interceptTorrents() {
-            // Перехватываем выбор торрента (как в LME TorrentManager)
+            // Перехватываем выбор торрента
             Lampa.Listener.follow('torrent', (e) => {
                 if (e.type !== 'onlong') return;
 
@@ -322,28 +319,23 @@
 
         // ===== ГИБРИДНЫЙ РЕЖИМ =====
         async _hybridMode(magnet, title, movie) {
-            // 1. Проверяем, есть ли торрент в Transmission
             Lampa.Bell.push({ text: '⏳ Проверка...' });
 
             let existing = await this.transmission.findTorrent(magnet);
 
             if (existing) {
-                // Торрент уже есть
                 const torrents = await this.transmission.getTorrents();
                 const full = torrents.find(t => t.id === existing.id);
 
                 if (full && full.percentDone >= 0.99) {
-                    // Скачан - играем локально
                     await this._playLocal(full, title);
                     return;
                 }
 
-                // Скачивается - предлагаем выбор
                 this._showOptions(existing, magnet, title);
                 return;
             }
 
-            // 2. Торрента нет - добавляем и стримим
             Lampa.Bell.push({ text: '⏳ Добавление...' });
 
             const result = await this.transmission.addTorrent(magnet, {
@@ -355,10 +347,8 @@
                 throw new Error('Не удалось добавить торрент');
             }
 
-            // 3. Стримим через TorrServer
             await this._streamViaTorrServer(magnet, title);
 
-            // 4. Запускаем фоновую загрузку
             const added = result.arguments['torrent-added'];
             if (added && added.id) {
                 setTimeout(() => {
@@ -395,7 +385,7 @@
 
         // ===== ВОСПРОИЗВЕДЕНИЕ ЛОКАЛЬНОГО ФАЙЛА =====
         async _playLocal(torrent, title) {
-            const localPath = Lampa.Storage.get('torrentbridge_local_path') || CONFIG.localPath;
+            const localPath = Lampa.Storage.get('torrentbridge_local_path') || 'http://192.168.1.112:8080/';
             const videoFiles = torrent.files.filter(f => {
                 const ext = f.name.split('.').pop().toLowerCase();
                 return ['mp4', 'mkv', 'avi', 'mov', 'webm', 'm4v', 'ts'].includes(ext);
@@ -489,7 +479,7 @@
             Lampa.Bell.push({ text: '⏳ Ожидание...' });
 
             let attempts = 0;
-            const maxAttempts = 120; // 10 минут
+            const maxAttempts = 120;
 
             const check = async () => {
                 attempts++;
