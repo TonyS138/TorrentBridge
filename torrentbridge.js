@@ -1,6 +1,6 @@
 /**
  * Torrent Bridge - плагин для запуска торрентов из Torrent Manager через TorrServer
- * Версия 1.0.10 - с правильным порядком загрузки
+ * Версия 1.0.11 - с выбором торрента из списка
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '1.0.10',
+        version: '1.0.11',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         description: 'Launch torrents from Torrent Manager via TorrServer',
@@ -17,7 +17,6 @@
     };
 
     let transmissionSessionId = null;
-    let lastTorrentData = null;
     let originalSelectShow = null;
 
     function log(...args) {
@@ -55,7 +54,7 @@
     }
 
     /**
-     * Запрос к Transmission через Lampa.Reguest
+     * Запрос к Transmission
      */
     function transmissionRequest(method, args, retry = true) {
         return new Promise((resolve, reject) => {
@@ -121,7 +120,7 @@
     }
 
     /**
-     * Запрос к TorrServer через Lampa.Reguest
+     * Запрос к TorrServer
      */
     function torrServerRequest(path, method = 'GET', body = null) {
         return new Promise((resolve, reject) => {
@@ -160,24 +159,19 @@
         });
     }
 
-    async function getTorrentHash(torrentId) {
+    /**
+     * Получение списка всех торрентов из Transmission
+     */
+    async function getAllTorrents() {
         const response = await transmissionRequest('torrent-get', {
-            ids: [torrentId],
             fields: ['hashString', 'name', 'id', 'percentDone', 'status']
         });
 
-        if (response.arguments && response.arguments.torrents && response.arguments.torrents.length > 0) {
-            const torrent = response.arguments.torrents[0];
-            return {
-                hash: torrent.hashString,
-                name: torrent.name,
-                id: torrent.id,
-                percentDone: torrent.percentDone,
-                status: torrent.status
-            };
+        if (response.arguments && response.arguments.torrents) {
+            return response.arguments.torrents;
         }
 
-        throw new Error('Torrent not found in Transmission');
+        return [];
     }
 
     async function addToTorrServer(hash, title) {
@@ -237,35 +231,75 @@
         });
     }
 
-    async function playTorrent(torrentData) {
-        if (!torrentData || !torrentData.id) {
-            Lampa.Bell.push({ text: 'Нет данных торрента' });
-            return;
-        }
+    /**
+     * Показать список торрентов для выбора
+     */
+    async function showTorrentList() {
+        Lampa.Activity.loader(true);
+        
+        try {
+            const torrents = await getAllTorrents();
+            log('All torrents:', torrents);
+            
+            if (!torrents || torrents.length === 0) {
+                Lampa.Activity.loader(false);
+                Lampa.Bell.push({ text: 'Нет торрентов в Transmission' });
+                return;
+            }
 
+            const items = torrents.map(torrent => ({
+                title: `${torrent.name} (${Math.round(torrent.percentDone * 100)}%)`,
+                torrent: torrent
+            }));
+
+            Lampa.Activity.loader(false);
+            
+            Lampa.Select.show({
+                title: 'Выберите торрент для просмотра',
+                items: items,
+                onSelect: (item) => {
+                    if (item.torrent) {
+                        playTorrentFromTransmission(item.torrent);
+                    }
+                },
+                onBack: () => {
+                    Lampa.Controller.toggle('content');
+                }
+            });
+        } catch (error) {
+            log('Error getting torrents:', error);
+            Lampa.Activity.loader(false);
+            Lampa.Bell.push({ text: 'Ошибка: ' + (error.message || 'Не удалось получить торренты') });
+        }
+    }
+
+    /**
+     * Запуск торрента из данных Transmission
+     */
+    async function playTorrentFromTransmission(torrent) {
         Lampa.Activity.loader(true);
         Lampa.Bell.push({ text: 'Подключение к TorrServer...' });
 
         try {
-            const torrentInfo = await getTorrentHash(torrentData.id);
-            log('Torrent info:', torrentInfo);
+            const hash = torrent.hashString;
+            const name = torrent.name;
 
-            if (!torrentInfo.hash) {
+            if (!hash) {
                 throw new Error('Не удалось получить hash торрента');
             }
 
-            await addToTorrServer(torrentInfo.hash, torrentInfo.name);
+            await addToTorrServer(hash, name);
             
             Lampa.Bell.push({ text: 'Получение потока...' });
 
             await new Promise(resolve => setTimeout(resolve, 3000));
 
-            const files = await getTorrServerFiles(torrentInfo.hash);
+            const files = await getTorrServerFiles(hash);
             log('Files:', files);
 
             if (!files || files.length === 0) {
-                const streamUrl = getStreamUrl(torrentInfo.hash, 0);
-                playStream(streamUrl, torrentInfo.name);
+                const streamUrl = getStreamUrl(hash, 0);
+                playStream(streamUrl, name);
                 return;
             }
 
@@ -277,14 +311,14 @@
             });
 
             if (mediaFiles.length === 0) {
-                const streamUrl = getStreamUrl(torrentInfo.hash, 0);
-                playStream(streamUrl, torrentInfo.name);
+                const streamUrl = getStreamUrl(hash, 0);
+                playStream(streamUrl, name);
                 return;
             }
 
             if (mediaFiles.length === 1) {
-                const streamUrl = getStreamUrl(torrentInfo.hash, mediaFiles[0]._index);
-                playStream(streamUrl, torrentInfo.name);
+                const streamUrl = getStreamUrl(hash, mediaFiles[0]._index);
+                playStream(streamUrl, name);
             } else {
                 const fileItems = mediaFiles.map((file) => ({
                     title: String(file.name).split('/').pop(),
@@ -298,8 +332,8 @@
                     title: 'Выберите файл для просмотра',
                     items: fileItems,
                     onSelect: (item) => {
-                        const streamUrl = getStreamUrl(torrentInfo.hash, item.index);
-                        playStream(streamUrl, torrentInfo.name);
+                        const streamUrl = getStreamUrl(hash, item.index);
+                        playStream(streamUrl, name);
                     },
                     onBack: () => {
                         Lampa.Controller.toggle('content');
@@ -402,22 +436,15 @@
         });
     }
 
-    /**
-     * Перехват Lampa.Select.show
-     * Важно: должен быть установлен ДО вызова Torrent Manager
-     */
+    // Перехват Lampa.Select.show
     function hookSelectShow() {
-        if (originalSelectShow) {
-            log('Already hooked');
-            return;
-        }
+        if (originalSelectShow) return;
 
         originalSelectShow = Lampa.Select.show;
         
         Lampa.Select.show = function(options) {
             const items = options.items || [];
             
-            // Определяем, является ли это меню торрента
             const isTorrentMenu = items.some(item => 
                 item.action === 'resume' || 
                 item.action === 'pause' || 
@@ -425,9 +452,8 @@
             );
 
             if (isTorrentMenu && isPluginEnabled()) {
-                log('Torrent menu detected, adding play item');
+                log('Torrent menu detected');
                 
-                // Добавляем пункт
                 const playItem = {
                     title: '🎬 Play on TorrServer',
                     action: 'play_torrserver'
@@ -438,48 +464,24 @@
 
                 items.splice(insertIndex, 0, playItem);
 
-                // Перехватываем onSelect
                 const originalOnSelect = options.onSelect;
                 
                 options.onSelect = function(item) {
                     log('Item selected:', item);
                     
                     if (item && item.action === 'play_torrserver') {
-                        const torrentData = getTorrentData();
-                        
-                        if (torrentData && torrentData.id) {
-                            playTorrent(torrentData);
-                        } else {
-                            Lampa.Bell.push({ 
-                                text: 'Нет данных торрента' 
-                            });
-                        }
+                        // Показываем список торрентов для выбора
+                        showTorrentList();
                     } else if (originalOnSelect) {
                         originalOnSelect(item);
                     }
                 };
             }
 
-            // Вызываем оригинальный метод
             return originalSelectShow.call(this, options);
         };
         
         log('Hooked Lampa.Select.show');
-    }
-
-    function getTorrentData() {
-        if (lastTorrentData && lastTorrentData.id) {
-            return lastTorrentData;
-        }
-
-        // Пробуем получить из TorrentStateManager
-        const tm = window.TorrentStateManager;
-        if (tm && tm.torrents && tm.torrents.length > 0) {
-            lastTorrentData = tm.torrents[0];
-            return lastTorrentData;
-        }
-
-        return null;
     }
 
     function init() {
@@ -490,7 +492,6 @@
         createSettingsMenu();
         Lampa.Manifest.plugins = MANIFEST;
 
-        // Перехватываем Select.show сразу
         hookSelectShow();
 
         log('Torrent Bridge initialized');
