@@ -1,6 +1,6 @@
 /**
  * Torrent Bridge - плагин для запуска торрентов из Torrent Manager через TorrServer
- * Версия 1.0.3
+ * Версия 1.0.4
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '1.0.3',
+        version: '1.0.4',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         description: 'Launch torrents from Torrent Manager via TorrServer',
@@ -19,6 +19,7 @@
     const TORRSERVER_URL = 'http://192.168.1.101:8090';
     
     let transmissionSessionId = null;
+    let lastTorrentData = null; // Храним данные последнего выбранного торрента
 
     function log(...args) {
         console.log('[TorrentBridge]', ...args);
@@ -123,17 +124,7 @@
             network.quiet(
                 `${TORRSERVER_URL}${path}`,
                 (response) => {
-                    // TorrServer может возвращать JSON или текст
-                    if (typeof response === 'string') {
-                        try {
-                            resolve(JSON.parse(response));
-                        } catch (e) {
-                            // Если не JSON — возвращаем как есть
-                            resolve(response);
-                        }
-                    } else {
-                        resolve(response);
-                    }
+                    resolve(response);
                 },
                 (error) => {
                     reject(error);
@@ -219,6 +210,11 @@
             return;
         }
 
+        if (!torrentData || !torrentData.id) {
+            Lampa.Bell.push({ text: 'Нет данных торрента' });
+            return;
+        }
+
         Lampa.Activity.loader(true);
         Lampa.Bell.push({ text: 'Подключение к TorrServer...' });
 
@@ -299,10 +295,11 @@
             const response = await torrServerRequest('/echo', 'GET');
             log('TorrServer echo response:', response);
             
+            // Проверяем, что ответ содержит "MatriX"
             if (response && String(response).includes('MatriX')) {
-                Lampa.Bell.push({ text: 'TorrServer доступен (MatriX)' });
+                Lampa.Bell.push({ text: 'TorrServer доступен' });
             } else {
-                Lampa.Bell.push({ text: 'TorrServer доступен: ' + response });
+                Lampa.Bell.push({ text: 'TorrServer ответил: ' + response });
             }
         } catch (e) {
             log('TorrServer test failed:', e);
@@ -331,7 +328,6 @@
             icon: MANIFEST.icon
         });
 
-        // Триггер активации
         Lampa.SettingsApi.addParam({
             component: MANIFEST.component,
             param: {
@@ -358,7 +354,6 @@
             }
         });
 
-        // Кнопка тестирования
         Lampa.SettingsApi.addParam({
             component: MANIFEST.component,
             param: {
@@ -388,6 +383,7 @@
             );
 
             if (isTorrentMenu && isPluginEnabled()) {
+                // Сохраняем ссылку на items для доступа из onSelect
                 const playItem = {
                     title: '🎬 Play on TorrServer',
                     action: 'play_torrserver',
@@ -403,9 +399,10 @@
                 
                 options.onSelect = function(item) {
                     if (item.action === 'play_torrserver') {
-                        const torrentData = getTorrentDataFromContext();
+                        // Пытаемся получить данные торрента
+                        const torrentData = getTorrentData();
                         
-                        if (torrentData) {
+                        if (torrentData && torrentData.id) {
                             playTorrent(torrentData);
                         } else {
                             Lampa.Bell.push({ 
@@ -422,13 +419,30 @@
         };
     }
 
-    function getTorrentDataFromContext() {
+    // Получение данных торрента из различных источников
+    function getTorrentData() {
+        // 1. Пробуем из глобального состояния Torrent Manager
         if (window.TorrentStateManager && window.TorrentStateManager.torrents) {
-            return window.TorrentStateManager.torrents[0] || null;
+            const torrents = window.TorrentStateManager.torrents;
+            if (torrents.length > 0) {
+                log('Got torrent from TorrentStateManager:', torrents[0]);
+                return torrents[0];
+            }
         }
 
-        if (window.currentTorrent) {
-            return window.currentTorrent;
+        // 2. Пробуем через Lampa.Activity
+        const activity = Lampa.Activity.active();
+        if (activity) {
+            log('Activity:', activity);
+            if (activity.movie) {
+                return activity.movie;
+            }
+        }
+
+        // 3. Пробуем через DOM
+        const focusedCard = document.querySelector('.lmetorrent_item__card.focus, .card--category.focus');
+        if (focusedCard) {
+            log('Found focused card:', focusedCard);
         }
 
         return null;
