@@ -1,6 +1,6 @@
 /**
  * Torrent Bridge - плагин для запуска торрентов из Torrent Manager через TorrServer
- * Версия 1.0.8 - с правильным чтением настроек TorrServer
+ * Версия 1.0.9 - с исправленной проверкой и активацией пункта меню
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '1.0.8',
+        version: '1.0.9',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         description: 'Launch torrents from Torrent Manager via TorrServer',
@@ -18,7 +18,6 @@
 
     let transmissionSessionId = null;
     let lastTorrentData = null;
-    let lastFocusedTorrent = null;
 
     function log(...args) {
         console.log('[TorrentBridge]', ...args);
@@ -32,25 +31,17 @@
         Lampa.Storage.set(MANIFEST.component + '_enabled', value === true);
     }
 
-    /**
-     * Получение URL TorrServer из настроек Lampa
-     * Использует правильный ключ: torrserver_url
-     */
     function getTorrServerUrl() {
-        // Основной ключ из консоли
         const mainUrl = Lampa.Storage.get('torrserver_url', '');
-        
         if (mainUrl && String(mainUrl).trim()) {
             let url = String(mainUrl).trim();
             url = url.replace(/\/+$/, '');
             if (!url.startsWith('http://') && !url.startsWith('https://')) {
                 url = 'http://' + url;
             }
-            log('Using TorrServer URL:', url);
             return url;
         }
         
-        // Запасной ключ
         const altUrl = Lampa.Storage.get('torrserverUrl', '');
         if (altUrl && String(altUrl).trim()) {
             let url = String(altUrl).trim();
@@ -58,17 +49,12 @@
             if (!url.startsWith('http://') && !url.startsWith('https://')) {
                 url = 'http://' + url;
             }
-            log('Using alt TorrServer URL:', url);
             return url;
         }
         
-        log('TorrServer URL not found, using default');
         return 'http://192.168.1.101:8090';
     }
 
-    /**
-     * Получение конфигурации Transmission
-     */
     function getTransmissionConfig() {
         return {
             url: Lampa.Storage.get('lmetorrenttransmissionUrl', 'http://192.168.1.112:9091'),
@@ -78,9 +64,6 @@
         };
     }
 
-    /**
-     * Запрос к Transmission через Lampa.Reguest (как в Torrent Manager)
-     */
     function transmissionRequest(method, args, retry = true) {
         return new Promise((resolve, reject) => {
             const config = getTransmissionConfig();
@@ -101,7 +84,7 @@
 
             const makeRequest = () => {
                 const network = new Lampa.Reguest();
-                network.timeout(15000);
+                network.timeout(10000);
                 
                 network.quiet(
                     `${config.url}${config.path}`,
@@ -145,7 +128,7 @@
     }
 
     /**
-     * Запрос к TorrServer через Lampa.Request (как в Lampa)
+     * Запрос к TorrServer с правильной обработкой ошибок
      */
     function torrServerRequest(path, method = 'GET', body = null) {
         return new Promise((resolve, reject) => {
@@ -154,51 +137,23 @@
             
             log('TorrServer request:', method, url);
             
-            // Используем Lampa.Request как в Lampa
-            if (Lampa.Request) {
-                const request = new Lampa.Request();
-                
-                const options = {
-                    type: method,
-                    dataType: 'text'
-                };
-                
-                if (body) {
-                    options.headers = {
-                        'Content-Type': 'application/json'
-                    };
+            // Используем jQuery ajax напрямую с правильной обработкой
+            $.ajax({
+                url: url,
+                method: method,
+                data: body ? JSON.stringify(body) : null,
+                contentType: body ? 'application/json' : undefined,
+                dataType: 'text',
+                timeout: 10000,
+                success: function(response) {
+                    log('TorrServer success:', response);
+                    resolve(response);
+                },
+                error: function(xhr, status, error) {
+                    log('TorrServer error:', status, error);
+                    reject(new Error(error || status || 'Network error'));
                 }
-                
-                request.quiet(
-                    url,
-                    (response) => {
-                        log('TorrServer response type:', typeof response);
-                        resolve(response);
-                    },
-                    (error) => {
-                        log('TorrServer error:', error);
-                        reject(error);
-                    },
-                    body ? JSON.stringify(body) : null,
-                    options
-                );
-            } else {
-                // Fallback на jQuery ajax
-                $.ajax({
-                    url: url,
-                    method: method,
-                    data: body ? JSON.stringify(body) : null,
-                    contentType: body ? 'application/json' : undefined,
-                    dataType: 'text',
-                    timeout: 15000,
-                    success: (response) => {
-                        resolve(response);
-                    },
-                    error: (xhr, status, error) => {
-                        reject(new Error(error || status));
-                    }
-                });
-            }
+            });
         });
     }
 
@@ -245,7 +200,11 @@
         try {
             const response = await torrServerRequest(`/torrents/${hash}/files`, 'GET');
             if (typeof response === 'string') {
-                return JSON.parse(response);
+                try {
+                    return JSON.parse(response);
+                } catch (e) {
+                    return [];
+                }
             }
             return response || [];
         } catch (e) {
@@ -372,7 +331,7 @@
         } catch (e) {
             log('TorrServer test failed:', e);
             Lampa.Bell.push({ 
-                text: '❌ TorrServer недоступен: ' + (e.message || e.statusText || 'unknown')
+                text: '❌ TorrServer недоступен: ' + (e.message || 'unknown')
             });
         }
 
@@ -442,7 +401,6 @@
 
     // Перехват меню торрента
     function hookTorrentMenu() {
-        // Перехватываем Lampa.Select.show
         const originalSelectShow = Lampa.Select.show;
         
         Lampa.Select.show = function(options) {
@@ -458,7 +416,8 @@
                 const playItem = {
                     title: '🎬 Play on TorrServer',
                     action: 'play_torrserver',
-                    separator: true
+                    separator: true,
+                    disabled: false
                 };
 
                 const openIndex = items.findIndex(item => item.action === 'card');
@@ -469,8 +428,9 @@
                 const originalOnSelect = options.onSelect;
                 
                 options.onSelect = function(item) {
+                    log('Selected item:', item);
+                    
                     if (item.action === 'play_torrserver') {
-                        // Пытаемся получить данные из разных источников
                         const torrentData = getTorrentData();
                         
                         if (torrentData && torrentData.id) {
@@ -492,14 +452,11 @@
         log('Hooked Lampa.Select.show');
     }
 
-    // Получение данных торрента
     function getTorrentData() {
-        // 1. Из lastTorrentData
         if (lastTorrentData && lastTorrentData.id) {
             return lastTorrentData;
         }
 
-        // 2. Из TorrentStateManager
         if (window.TorrentStateManager && window.TorrentStateManager.torrents) {
             const torrents = window.TorrentStateManager.torrents;
             if (torrents.length > 0) {
@@ -511,7 +468,6 @@
         return null;
     }
 
-    // Инициализация
     function init() {
         log('Initializing Torrent Bridge...');
         log('Enabled state:', isPluginEnabled());
