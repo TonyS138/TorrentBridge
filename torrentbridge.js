@@ -1,6 +1,6 @@
 /**
  * Torrent Bridge - кнопка запуска видео на карточке фильма
- * Версия 2.3.0 - с детальным логированием ошибок
+ * Версия 2.4.0 - с правильным API TorrServer
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '2.3.0',
+        version: '2.4.0',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         description: 'Кнопка запуска видео из Torrent Manager через TorrServer',
@@ -79,55 +79,62 @@
         });
     }
 
-    function torrServerRequest(path, method = 'GET', body = null) {
+    /**
+     * Добавление торрента в TorrServer через правильный API
+     * TorrServer использует GET /torrent/add?link=MAGNET
+     */
+    function addToTorrServer(magnet) {
         return new Promise((resolve, reject) => {
-            const url = `${getTorrServerUrl()}${path}`;
-            log('TorrServer URL:', url);
+            const torrServerUrl = getTorrServerUrl();
+            const url = `${torrServerUrl}/torrent/add?link=${encodeURIComponent(magnet)}`;
+            
+            log('Adding to TorrServer:', url);
             
             const network = new Lampa.Reguest();
-            network.timeout(10000);
+            network.timeout(15000);
+            
             network.quiet(
                 url,
                 (response) => {
-                    log('TorrServer response:', response);
+                    log('TorrServer add response:', response);
                     resolve(response);
                 },
                 (error) => {
-                    log('TorrServer error details:', {
-                        status: error.status,
-                        statusText: error.statusText,
-                        message: error.message,
-                        responseText: error.responseText,
-                        readyState: error.readyState
-                    });
+                    log('TorrServer add error:', error);
                     reject(error);
                 },
-                body ? JSON.stringify(body) : null,
-                { type: method, dataType: 'text' }
+                null,
+                { type: 'GET', dataType: 'text' }
             );
         });
     }
 
-    // Запуск торрента по magnet
+    /**
+     * Получение URL потока от TorrServer
+     */
+    function getStreamUrl(hash, fileIndex = 0) {
+        const torrServerUrl = getTorrServerUrl();
+        return `${torrServerUrl}/stream?link=${hash}&index=${fileIndex}&play=1`;
+    }
+
+    /**
+     * Запуск торрента
+     */
     async function playByMagnet(magnet, title) {
-        Lampa.Bell.push({ text: 'Подключение к TorrServer...' });
+        Lampa.Bell.push({ text: 'Добавление в TorrServer...' });
 
         try {
-            log('Sending magnet to TorrServer:', magnet);
+            // Добавляем торрент в TorrServer
+            await addToTorrServer(magnet);
             
-            const response = await torrServerRequest('/torrents', 'POST', {
-                link: magnet,
-                title: title || 'Torrent',
-                poster: '',
-                save_to: ''
-            });
-
-            log('TorrServer add response:', response);
-
+            log('Torrent added to TorrServer');
+            
             Lampa.Bell.push({ text: 'Получение потока...' });
             
-            await new Promise(resolve => setTimeout(resolve, 3000));
+            // Ждём, пока TorrServer обработает торрент
+            await new Promise(resolve => setTimeout(resolve, 5000));
 
+            // Извлекаем hash из magnet
             const hashMatch = magnet.match(/btih:([a-zA-Z0-9]+)/);
             const hash = hashMatch ? hashMatch[1] : '';
             
@@ -135,36 +142,29 @@
                 throw new Error('Не удалось извлечь hash из magnet');
             }
 
-            const streamUrl = `${getTorrServerUrl()}/stream?link=${hash}&index=0&play=1`;
+            // Формируем URL потока
+            const streamUrl = getStreamUrl(hash);
             log('Stream URL:', streamUrl);
 
+            Lampa.Bell.push({ text: 'Запуск воспроизведения...' });
+
+            // Запускаем воспроизведение
             Lampa.Player.play({
                 url: streamUrl,
                 title: title || 'Torrent',
                 timeline: false
             });
         } catch (error) {
-            log('Play error details:', {
-                message: error.message,
-                status: error.status,
-                statusText: error.statusText,
-                responseText: error.responseText,
-                stack: error.stack
+            log('Play error:', error);
+            Lampa.Bell.push({ 
+                text: 'Ошибка: ' + (error.message || error.statusText || 'Не удалось запустить')
             });
-            
-            let errorText = 'Не удалось запустить';
-            if (error.message) {
-                errorText += ': ' + error.message;
-            }
-            if (error.status) {
-                errorText += ' (HTTP ' + error.status + ')';
-            }
-            
-            Lampa.Bell.push({ text: 'Ошибка: ' + errorText });
         }
     }
 
-    // Поиск торрента в Transmission
+    /**
+     * Поиск торрента в Transmission
+     */
     async function findTorrentByMovie(movie) {
         const method = movie.first_air_date ? 'tv' : 'movie';
         const id = movie.id;
@@ -181,6 +181,7 @@
                 const torrents = response.arguments.torrents;
                 log('Total torrents in Transmission:', torrents.length);
 
+                // Ищем по метке
                 const matched = torrents.find(torrent => {
                     const labels = torrent.labels || [];
                     return labels.includes(searchLabel);
@@ -191,6 +192,7 @@
                     return matched;
                 }
 
+                // По имени
                 const movieTitle = (movie.title || movie.name || movie.original_title || '').toLowerCase();
                 const matchedByName = torrents.find(torrent => {
                     const torrentName = (torrent.name || '').toLowerCase();
@@ -211,7 +213,9 @@
         return null;
     }
 
-    // Добавление кнопки
+    /**
+     * Добавление кнопки на карточку фильма
+     */
     async function addPlayButton(movieData) {
         if (!isPluginEnabled()) {
             log('Plugin disabled');
@@ -246,13 +250,14 @@
                     return;
                 }
 
-                const magnet = `magnet:?xt=urn:btih:${torrent.hashString}`;
+                // Создаём magnet-ссылку
+                const magnet = `magnet:?xt=urn:btih:${torrent.hashString}&dn=${encodeURIComponent(torrent.name)}`;
                 log('Magnet:', magnet);
 
                 await playByMagnet(magnet, torrent.name);
             } catch (error) {
                 log('Error on button click:', error);
-                Lampa.Bell.push({ text: 'Ошибка: ' + error.message });
+                Lampa.Bell.push({ text: 'Ошибка: ' + (error.message || 'unknown') });
             }
         });
 
@@ -310,7 +315,7 @@
     }
 
     function init() {
-        log('Initializing Torrent Bridge v2.3...');
+        log('Initializing Torrent Bridge v2.4...');
         createSettingsMenu();
         Lampa.Manifest.plugins = MANIFEST;
         listenForMovieCard();
