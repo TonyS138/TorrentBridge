@@ -1,6 +1,6 @@
 /**
  * Torrent Bridge - кнопка запуска видео на карточке фильма
- * Версия 2.0.0
+ * Версия 2.1.0 - с диагностикой
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '2.0.0',
+        version: '2.1.0',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         description: 'Кнопка запуска видео из Torrent Manager через TorrServer',
@@ -39,7 +39,6 @@
         };
     }
 
-    // Запрос к Transmission
     function transmissionRequest(method, args, retry = true) {
         return new Promise((resolve, reject) => {
             const config = getTransmissionConfig();
@@ -80,30 +79,38 @@
         });
     }
 
-    // Запрос к TorrServer
     function torrServerRequest(path, method = 'GET', body = null) {
         return new Promise((resolve, reject) => {
             const url = `${getTorrServerUrl()}${path}`;
+            log('TorrServer URL:', url);
+            
             const network = new Lampa.Reguest();
             network.timeout(10000);
             network.quiet(
                 url,
-                (response) => resolve(response),
-                (error) => reject(error),
+                (response) => {
+                    log('TorrServer response:', response);
+                    resolve(response);
+                },
+                (error) => {
+                    log('TorrServer error:', error);
+                    reject(error);
+                },
                 body ? JSON.stringify(body) : null,
                 { type: method, dataType: 'text' }
             );
         });
     }
 
-    // Запуск торрента
-    async function playTorrentByHash(hash, title) {
+    // Запуск торрента по magnet-ссылке
+    async function playByMagnet(magnet, title) {
         Lampa.Activity.loader(true);
         Lampa.Bell.push({ text: 'Подключение к TorrServer...' });
 
         try {
-            // Добавляем в TorrServer
-            const magnet = `magnet:?xt=urn:btih:${hash}`;
+            log('Sending magnet to TorrServer:', magnet);
+            
+            // Отправляем magnet в TorrServer
             await torrServerRequest('/torrents', 'POST', {
                 link: magnet,
                 title: title || 'Torrent',
@@ -111,11 +118,20 @@
                 save_to: ''
             });
 
+            Lampa.Bell.push({ text: 'Получение потока...' });
+            
             await new Promise(resolve => setTimeout(resolve, 3000));
 
-            // Получаем URL потока
-            const streamUrl = `${getTorrServerUrl()}/stream?link=${hash}&index=0&play=1`;
+            // Формируем URL потока
+            // Извлекаем hash из magnet
+            const hashMatch = magnet.match(/btih:([a-zA-Z0-9]+)/);
+            const hash = hashMatch ? hashMatch[1] : '';
+            
+            if (!hash) {
+                throw new Error('Не удалось извлечь hash из magnet');
+            }
 
+            const streamUrl = `${getTorrServerUrl()}/stream?link=${hash}&index=0&play=1`;
             log('Stream URL:', streamUrl);
 
             Lampa.Activity.loader(false);
@@ -131,95 +147,117 @@
         }
     }
 
-    // Найти торрент по метаданным фильма
+    // Поиск торрента в Transmission
     async function findTorrentByMovie(movie) {
         const method = movie.first_air_date ? 'tv' : 'movie';
         const id = movie.id;
         const searchLabel = `${method}/${id}`;
 
-        log('Searching torrent for:', searchLabel);
+        log('Searching for label:', searchLabel);
+        log('Movie:', movie.title || movie.name, 'ID:', id);
 
-        const response = await transmissionRequest('torrent-get', {
-            fields: ['id', 'name', 'hashString', 'labels', 'percentDone', 'status']
-        });
-
-        if (response && response.arguments && response.arguments.torrents) {
-            const torrents = response.arguments.torrents;
-            
-            // Ищем по метке
-            const matched = torrents.find(torrent => {
-                const labels = torrent.labels || [];
-                return labels.includes(searchLabel);
+        try {
+            const response = await transmissionRequest('torrent-get', {
+                fields: ['id', 'name', 'hashString', 'labels', 'percentDone', 'status']
             });
 
-            if (matched) {
-                log('Found torrent by label:', matched);
-                return matched;
-            }
+            log('Transmission response:', response);
 
-            // Если не нашли по метке — пробуем по имени
-            const movieTitle = (movie.title || movie.name || movie.original_title || '').toLowerCase();
-            const matchedByName = torrents.find(torrent => {
-                const torrentName = (torrent.name || '').toLowerCase();
-                return movieTitle && torrentName.includes(movieTitle);
-            });
+            if (response && response.arguments && response.arguments.torrents) {
+                const torrents = response.arguments.torrents;
+                log('Total torrents:', torrents.length);
 
-            if (matchedByName) {
-                log('Found torrent by name:', matchedByName);
-                return matchedByName;
+                // Ищем по метке
+                const matched = torrents.find(torrent => {
+                    const labels = torrent.labels || [];
+                    log('Torrent:', torrent.name, 'Labels:', labels);
+                    return labels.includes(searchLabel);
+                });
+
+                if (matched) {
+                    log('Found by label:', matched.name, matched.hashString);
+                    return matched;
+                }
+
+                // По имени
+                const movieTitle = (movie.title || movie.name || movie.original_title || '').toLowerCase();
+                const matchedByName = torrents.find(torrent => {
+                    const torrentName = (torrent.name || '').toLowerCase();
+                    return movieTitle && torrentName.includes(movieTitle);
+                });
+
+                if (matchedByName) {
+                    log('Found by name:', matchedByName.name, matchedByName.hashString);
+                    return matchedByName;
+                }
+
+                log('Torrent not found');
             }
+        } catch (error) {
+            log('Error searching torrent:', error);
         }
 
         return null;
     }
 
-    // Добавление кнопки на карточку фильма
+    // Добавление кнопки
     async function addPlayButton(movieData) {
-        if (!isPluginEnabled()) return;
+        if (!isPluginEnabled()) {
+            log('Plugin disabled');
+            return;
+        }
 
         const movie = movieData.movie || movieData;
-        if (!movie || !movie.id) return;
+        if (!movie || !movie.id) {
+            log('No movie data');
+            return;
+        }
 
-        log('Adding play button for movie:', movie.title || movie.name);
+        log('Adding button for:', movie.title || movie.name);
 
-        try {
-            const torrent = await findTorrentByMovie(movie);
+        // Создаём кнопку
+        const $button = $(`
+            <div class="full-start__button selector button--torrent_bridge">
+                <svg viewBox="0 0 24 24" fill="currentColor" style="width: 24px; height: 24px;">
+                    <path d="M8 5v14l11-7z"/>
+                </svg>
+                <span>Смотреть через TorrServer</span>
+            </div>
+        `);
+
+        $button.on('hover:enter', async function() {
+            log('Button clicked!');
             
-            if (!torrent) {
-                log('Torrent not found for this movie');
-                return;
+            try {
+                const torrent = await findTorrentByMovie(movie);
+                
+                if (!torrent || !torrent.hashString) {
+                    Lampa.Bell.push({ text: 'Торрент не найден в Transmission' });
+                    return;
+                }
+
+                // Создаём magnet
+                const magnet = `magnet:?xt=urn:btih:${torrent.hashString}`;
+                log('Magnet:', magnet);
+
+                await playByMagnet(magnet, torrent.name);
+            } catch (error) {
+                log('Error on button click:', error);
+                Lampa.Bell.push({ text: 'Ошибка: ' + error.message });
             }
+        });
 
-            // Создаём кнопку
-            const $button = $(`
-                <div class="full-start__button selector button--torrent_bridge">
-                    <svg viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M8 5v14l11-7z"/>
-                    </svg>
-                    <span>Смотреть через TorrServer</span>
-                </div>
-            `);
-
-            $button.on('hover:enter', function() {
-                playTorrentByHash(torrent.hashString, torrent.name);
-            });
-
-            // Добавляем кнопку на карточку
-            const buttonsContainer = $('.full-start-new__buttons');
-            if (buttonsContainer.length) {
-                // Убираем старую кнопку, если есть
-                buttonsContainer.find('.button--torrent_bridge').remove();
-                buttonsContainer.append($button);
-                log('Button added');
-            } else {
-                log('Buttons container not found');
-            }
-        } catch (error) {
-            log('Error adding button:', error);
+        // Добавляем на карточку
+        const buttonsContainer = $('.full-start-new__buttons');
+        if (buttonsContainer.length) {
+            buttonsContainer.find('.button--torrent_bridge').remove();
+            buttonsContainer.append($button);
+            log('Button added to card');
+        } else {
+            log('Container .full-start-new__buttons not found');
         }
     }
 
-    // Слушаем событие открытия карточки фильма
     function listenForMovieCard() {
         Lampa.Listener.follow('full', function(e) {
             if (e.type === 'complite') {
@@ -231,7 +269,6 @@
         });
     }
 
-    // Создание меню в настройках
     function createSettingsMenu() {
         Lampa.SettingsApi.addComponent({
             component: MANIFEST.component,
@@ -265,7 +302,7 @@
     }
 
     function init() {
-        log('Initializing Torrent Bridge...');
+        log('Initializing Torrent Bridge v2.1...');
         createSettingsMenu();
         Lampa.Manifest.plugins = MANIFEST;
         listenForMovieCard();
