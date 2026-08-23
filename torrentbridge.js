@@ -1,6 +1,6 @@
 /**
  * Torrent Bridge - кнопка запуска видео на карточке фильма
- * Версия 2.2.0 - без Lampa.Activity.loader
+ * Версия 2.3.0 - с детальным логированием ошибок
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '2.2.0',
+        version: '2.3.0',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         description: 'Кнопка запуска видео из Torrent Manager через TorrServer',
@@ -93,7 +93,13 @@
                     resolve(response);
                 },
                 (error) => {
-                    log('TorrServer error:', error);
+                    log('TorrServer error details:', {
+                        status: error.status,
+                        statusText: error.statusText,
+                        message: error.message,
+                        responseText: error.responseText,
+                        readyState: error.readyState
+                    });
                     reject(error);
                 },
                 body ? JSON.stringify(body) : null,
@@ -109,12 +115,14 @@
         try {
             log('Sending magnet to TorrServer:', magnet);
             
-            await torrServerRequest('/torrents', 'POST', {
+            const response = await torrServerRequest('/torrents', 'POST', {
                 link: magnet,
                 title: title || 'Torrent',
                 poster: '',
                 save_to: ''
             });
+
+            log('TorrServer add response:', response);
 
             Lampa.Bell.push({ text: 'Получение потока...' });
             
@@ -136,8 +144,23 @@
                 timeline: false
             });
         } catch (error) {
-            log('Error:', error);
-            Lampa.Bell.push({ text: 'Ошибка: ' + (error.message || 'Не удалось запустить') });
+            log('Play error details:', {
+                message: error.message,
+                status: error.status,
+                statusText: error.statusText,
+                responseText: error.responseText,
+                stack: error.stack
+            });
+            
+            let errorText = 'Не удалось запустить';
+            if (error.message) {
+                errorText += ': ' + error.message;
+            }
+            if (error.status) {
+                errorText += ' (HTTP ' + error.status + ')';
+            }
+            
+            Lampa.Bell.push({ text: 'Ошибка: ' + errorText });
         }
     }
 
@@ -158,7 +181,6 @@
                 const torrents = response.arguments.torrents;
                 log('Total torrents in Transmission:', torrents.length);
 
-                // Ищем по метке
                 const matched = torrents.find(torrent => {
                     const labels = torrent.labels || [];
                     return labels.includes(searchLabel);
@@ -169,7 +191,6 @@
                     return matched;
                 }
 
-                // По имени
                 const movieTitle = (movie.title || movie.name || movie.original_title || '').toLowerCase();
                 const matchedByName = torrents.find(torrent => {
                     const torrentName = (torrent.name || '').toLowerCase();
@@ -289,7 +310,7 @@
     }
 
     function init() {
-        log('Initializing Torrent Bridge v2.2...');
+        log('Initializing Torrent Bridge v2.3...');
         createSettingsMenu();
         Lampa.Manifest.plugins = MANIFEST;
         listenForMovieCard();
