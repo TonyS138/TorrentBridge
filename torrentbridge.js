@@ -1,6 +1,6 @@
 /**
- * Torrent Bridge - финальная версия
- * Версия 4.1.0 - без ожидания, с локальным пиром
+ * Torrent Bridge - v4.1.1
+ * Просто переименованная кнопка
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '4.1.0',
+        version: '4.1.1',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         component: 'torrentbridge',
@@ -38,9 +38,6 @@
         };
     }
 
-    /**
-     * Запрос к Transmission
-     */
     function transmissionRequest(method, args, retry = true) {
         return new Promise((resolve, reject) => {
             const config = getTransmissionConfig();
@@ -74,15 +71,10 @@
         });
     }
 
-    /**
-     * API TorrServer
-     */
     function torrServerAction(action, data = {}) {
         return new Promise((resolve, reject) => {
             const url = `${getTorrServerUrl()}/torrents`;
             const body = JSON.stringify({ action, ...data });
-            
-            log('TorrServer:', action);
             
             $.ajax({
                 url: url,
@@ -93,7 +85,6 @@
                 timeout: 15000,
                 success: resolve,
                 error: function(xhr, status, error) {
-                    log('TorrServer error:', status, error);
                     reject(new Error(error || status));
                 }
             });
@@ -114,9 +105,6 @@
         return `${getTorrServerUrl()}/stream?link=${hash}&index=0&play=1`;
     }
 
-    /**
-     * Запуск воспроизведения — БЕЗ ожидания
-     */
     async function playByMagnet(magnet, title) {
         Lampa.Bell.push({ text: 'Добавление в TorrServer...' });
 
@@ -129,9 +117,8 @@
             if (!hash) throw new Error('No hash');
 
             const streamUrl = getStreamUrl(hash);
-            log('Stream URL:', streamUrl);
+            log('Stream:', streamUrl);
 
-            // Сразу запускаем — TorrServer сам начнёт буферизацию
             Lampa.Player.play({
                 url: streamUrl,
                 title: title || 'Torrent',
@@ -143,44 +130,29 @@
         }
     }
 
-    /**
-     * Поиск торрента в Transmission с полным magnet
-     */
     async function findTorrent(movie) {
         const method = movie.first_air_date ? 'tv' : 'movie';
         const id = movie.id;
         const label = `${method}/${id}`;
         const title = (movie.title || movie.name || '').toLowerCase().replace(/[^a-zа-я0-9]/g, '');
 
-        log('Search:', label, '|', title);
-
         try {
             const response = await transmissionRequest('torrent-get', {
-                fields: ['id', 'name', 'hashString', 'labels', 'percentDone', 'status', 'trackers']
+                fields: ['id', 'name', 'hashString', 'labels', 'percentDone', 'trackers']
             });
 
             const torrents = response?.arguments?.torrents || [];
-            log('Total:', torrents.length);
 
-            // По метке
             let found = torrents.find(t => (t.labels || []).includes(label));
-            if (found) {
-                log('Found by label:', found.name);
-                return found;
-            }
+            if (found) return found;
 
-            // По названию
             found = torrents.find(t => {
                 const name = (t.name || '').toLowerCase().replace(/[^a-zа-я0-9]/g, '');
                 return title && name.includes(title);
             });
             
-            if (found) {
-                log('Found by name:', found.name);
-                return found;
-            }
+            if (found) return found;
 
-            // Ручной выбор
             const items = torrents.map(t => ({
                 title: t.name,
                 subtitle: Math.round((t.percentDone || 0) * 100) + '%',
@@ -201,9 +173,6 @@
         }
     }
 
-    /**
-     * Получение полного magnet из Transmission (с трекерами)
-     */
     async function getFullMagnet(torrentId) {
         try {
             const response = await transmissionRequest('torrent-get', {
@@ -214,11 +183,9 @@
             const torrent = response?.arguments?.torrents?.[0];
             if (!torrent) return null;
 
-            // Формируем magnet с трекерами
             let magnet = `magnet:?xt=urn:btih:${torrent.hashString}`;
             magnet += `&dn=${encodeURIComponent(torrent.name)}`;
             
-            // Добавляем трекеры
             const trackers = torrent.trackers || [];
             trackers.forEach(tr => {
                 if (tr.announce) {
@@ -228,14 +195,10 @@
 
             return magnet;
         } catch (e) {
-            log('Get magnet error:', e);
             return null;
         }
     }
 
-    /**
-     * Добавление кнопки
-     */
     async function addButton(movieData) {
         if (!isEnabled()) return;
 
@@ -247,7 +210,7 @@
                 <svg viewBox="0 0 24 24" fill="currentColor" style="width:24px;height:24px">
                     <path d="M8 5v14l11-7z"/>
                 </svg>
-                <span>Смотреть через TorrServer</span>
+                <span>TorrentBridge</span>
             </div>
         `);
 
@@ -258,11 +221,9 @@
                 return;
             }
 
-            // Получаем полный magnet с трекерами
             const magnet = await getFullMagnet(torrent.id) || 
                 `magnet:?xt=urn:btih:${torrent.hashString}&dn=${encodeURIComponent(torrent.name)}`;
             
-            log('Magnet:', magnet.substring(0, 100) + '...');
             await playByMagnet(magnet, torrent.name);
         });
 
@@ -342,7 +303,7 @@
     }
 
     function init() {
-        log('Init v4.1');
+        log('Init v4.1.1');
         createSettings();
         Lampa.Manifest.plugins = MANIFEST;
         
