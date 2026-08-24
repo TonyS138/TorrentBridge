@@ -1,6 +1,6 @@
 /**
- * Torrent Bridge - v4.5.0
- * Исправлена навигация в меню "Смотреть" - теперь пункт полностью активен
+ * Torrent Bridge - v4.7.0
+ * Прямое добавление кнопки в меню "Смотреть" через DOM
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '4.5.0',
+        version: '4.7.0',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         component: 'torrentbridge',
@@ -17,7 +17,7 @@
 
     let transmissionSessionId = null;
     let currentMovie = null;
-    let originalSelectShow = null;
+    let bridgeAdded = false;
 
     function log(...args) {
         console.log('[TorrentBridge]', ...args);
@@ -247,7 +247,7 @@
     }
 
     /**
-     * Создание кнопки для основного контейнера
+     * Создание кнопки для основного контейнера в карточке фильма
      */
     function createMainButton() {
         return $(`
@@ -263,7 +263,7 @@
     }
 
     /**
-     * Добавление кнопки в основной контейнер
+     * Добавление кнопки в основной контейнер карточки
      */
     function addMainButton(movie) {
         currentMovie = movie;
@@ -277,104 +277,120 @@
     }
 
     /**
-     * Перехват Lampa.Select.show для добавления в подменю "Смотреть"
-     * Исправленная версия - используем правильную структуру
+     * Создание HTML для пункта меню "Смотреть"
      */
-    function hookSelectShow() {
-        if (originalSelectShow) return;
+    function createWatchMenuItemHTML() {
+        return `
+            <div class="selectbox-item selectbox-item--icon selector torrentbridge-watch-item" data-action="torrentbridge_play">
+                <div class="selectbox-item__icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                    </svg>
+                </div>
+                <div>
+                    <div class="selectbox-item__title">TorrentBridge</div>
+                    <div class="selectbox-item__subtitle">Воспроизвести с сервера</div>
+                </div>
+            </div>
+        `;
+    }
 
-        originalSelectShow = Lampa.Select.show;
-        
-        Lampa.Select.show = function(options) {
-            // Создаем копию items
-            const items = options.items ? [...options.items] : [];
-            
-            // Проверяем, что это меню выбора источника
-            const isWatchMenu = items.some(item => {
-                const title = String(item.title || '').toLowerCase();
-                return title.includes('торрент') || 
-                       title.includes('torrent') ||
-                       title.includes('онлайн') ||
-                       title.includes('online') ||
-                       title.includes('трейлер') ||
-                       title.includes('trailer');
+    /**
+     * Добавление кнопки в меню "Смотреть"
+     */
+    function addWatchMenuItem() {
+        if (!isEnabled()) return;
+        if (bridgeAdded) return;
+
+        // Ищем контейнер меню
+        const scrollBody = document.querySelector('.selectbox__body .scroll__body');
+        if (!scrollBody) {
+            // Если меню еще не открыто, ждем
+            return;
+        }
+
+        // Проверяем, есть ли уже наш пункт
+        if (scrollBody.querySelector('.torrentbridge-watch-item')) {
+            bridgeAdded = true;
+            return;
+        }
+
+        // Ищем элементы "Торренты" и "Трейлеры"
+        const items = scrollBody.querySelectorAll('.selectbox-item');
+        let insertBefore = null;
+        let hasTorrent = false;
+        let hasOnline = false;
+
+        items.forEach(item => {
+            const title = item.querySelector('.selectbox-item__title');
+            if (title) {
+                const text = title.textContent.trim().toLowerCase();
+                if (text === 'торренты' || text === 'torrents') {
+                    hasTorrent = true;
+                }
+                if (text === 'онлайн' || text === 'online') {
+                    hasOnline = true;
+                }
+                if (text === 'трейлеры' || text === 'trailers') {
+                    insertBefore = item;
+                }
+            }
+        });
+
+        // Добавляем пункт только если есть "Торренты" и "Онлайн" (это точно меню "Смотреть")
+        if (hasTorrent && hasOnline) {
+            const html = createWatchMenuItemHTML();
+            const $item = $(html);
+
+            // Добавляем обработчик клика
+            $item.on('click', function(e) {
+                e.stopPropagation();
+                log('TorrentBridge clicked in watch menu');
+                // Закрываем меню
+                Lampa.Controller.toggle('content');
+                setTimeout(() => {
+                    playCurrentMovie();
+                }, 200);
             });
 
-            // Проверяем, есть ли уже наш пункт
-            const hasBridge = items.some(item => item.action === 'torrentbridge_play');
-
-            if (isWatchMenu && isEnabled() && !hasBridge) {
-                log('Watch menu detected, adding TorrentBridge');
-                
-                // Создаем пункт меню с правильной структурой
-                const bridgeItem = {
-                    // Основные поля
-                    title: 'TorrentBridge',
-                    subtitle: 'Воспроизвести с сервера',
-                    action: 'torrentbridge_play',
-                    template: 'selectbox_icon', // Важно! Используем тот же шаблон что и другие пункты
-                    separator: true,
-                    
-                    // Иконка
-                    icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>',
-                    
-                    // Дополнительные поля для стилизации
-                    $icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>',
-                    
-                    // Свой обработчик
-                    onSelect: function() {
-                        log('TorrentBridge selected from watch menu');
-                        // Закрываем меню перед воспроизведением
-                        Lampa.Controller.toggle('content');
-                        setTimeout(() => {
-                            playCurrentMovie();
-                        }, 100);
-                    }
-                };
-
-                // Находим позицию для вставки
-                const trailerIndex = items.findIndex(item => {
-                    const title = String(item.title || '').toLowerCase();
-                    return title.includes('трейлер') || title.includes('trailer');
-                });
-
-                // Вставляем в найденную позицию или в конец
-                if (trailerIndex !== -1) {
-                    items.splice(trailerIndex, 0, bridgeItem);
-                } else {
-                    items.push(bridgeItem);
-                }
-
-                // Сохраняем оригинальный onSelect
-                const originalOnSelect = options.onSelect;
-                
-                // Переопределяем onSelect
-                options.onSelect = function(item) {
-                    log('Item selected:', item);
-                    
-                    // Если выбран наш пункт
-                    if (item && item.action === 'torrentbridge_play') {
-                        if (typeof item.onSelect === 'function') {
-                            item.onSelect();
-                        }
-                        return;
-                    }
-                    
-                    // Иначе вызываем оригинальный обработчик
-                    if (typeof originalOnSelect === 'function') {
-                        originalOnSelect(item);
-                    }
-                };
-
-                // Обновляем items в options
-                options.items = items;
+            // Вставляем перед "Трейлеры" или в конец
+            if (insertBefore) {
+                $(insertBefore).before($item);
+            } else {
+                $(scrollBody).append($item);
             }
 
-            // Вызываем оригинальный метод с обновленными options
-            return originalSelectShow.call(this, options);
-        };
-        
-        log('Select.show hooked');
+            bridgeAdded = true;
+            log('Watch menu item added');
+        }
+    }
+
+    /**
+     * Наблюдатель за появлением меню "Смотреть"
+     */
+    function setupWatchMenuObserver() {
+        // Используем MutationObserver для отслеживания появления меню
+        const observer = new MutationObserver(function(mutations) {
+            mutations.forEach(function(mutation) {
+                // Проверяем, появился ли .selectbox__body
+                if (mutation.type === 'childList' || mutation.type === 'attributes') {
+                    const selectBody = document.querySelector('.selectbox__body .scroll__body');
+                    if (selectBody && !bridgeAdded) {
+                        // Небольшая задержка, чтобы DOM успел обновиться
+                        setTimeout(addWatchMenuItem, 100);
+                    }
+                }
+            });
+        });
+
+        // Наблюдаем за изменениями в body
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: false
+        });
+
+        log('Watch menu observer setup');
     }
 
     async function testConnection() {
@@ -438,12 +454,12 @@
             onChange: function(value) {
                 const enabled = value === true || value === 'true';
                 Lampa.Storage.set(MANIFEST.component + '_enabled', enabled === true);
+                bridgeAdded = false; // Сбрасываем флаг, чтобы кнопка добавилась заново
                 Lampa.Bell.push({ text: enabled ? 'TorrentBridge активирован' : 'TorrentBridge деактивирован' });
                 Lampa.Settings.update();
             }
         });
 
-        // Выбор плеера
         Lampa.SettingsApi.addParam({
             component: MANIFEST.component,
             param: {
@@ -470,7 +486,6 @@
             }
         });
 
-        // Настройки TorrServer
         Lampa.SettingsApi.addParam({
             component: MANIFEST.component,
             param: {
@@ -556,12 +571,14 @@
     }
 
     function init() {
-        log('Init v4.5.0');
+        log('Init v4.7.0');
         createSettings();
         Lampa.Manifest.plugins = MANIFEST;
         
-        hookSelectShow();
+        // Настраиваем наблюдатель за меню "Смотреть"
+        setupWatchMenuObserver();
         
+        // Слушаем открытие карточки фильма
         Lampa.Listener.follow('full', function(e) {
             if (e.type === 'complite') {
                 setTimeout(() => {
@@ -575,7 +592,7 @@
             }
         });
         
-        log('TorrentBridge v4.5.0 initialized');
+        log('TorrentBridge v4.7.0 initialized');
     }
 
     if (!window.plugin_torrentbridge_ready) {
