@@ -1,7 +1,6 @@
 /**
- * Torrent Bridge - v4.4.0
- * Кнопка в основном контейнере + в подменю "Смотреть" (исправлена навигация)
- * + выбор плеера (встроенный/внешний)
+ * Torrent Bridge - v4.5.0
+ * Исправлена навигация в меню "Смотреть" - теперь пункт полностью активен
  */
 
 (function () {
@@ -9,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '4.4.0',
+        version: '4.5.0',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         component: 'torrentbridge',
@@ -129,11 +128,9 @@
             const playerType = getPlayerType();
             
             if (playerType === 'external') {
-                // Внешний плеер - открываем в новом окне/вкладке
                 window.open(streamUrl, '_blank');
                 Lampa.Bell.push({ text: 'Открыто во внешнем плеере' });
             } else {
-                // Встроенный плеер Lampa
                 Lampa.Player.play({
                     url: streamUrl,
                     title: title || 'Torrent',
@@ -280,24 +277,8 @@
     }
 
     /**
-     * Создание пункта для меню "Смотреть"
-     */
-    function createWatchMenuItem() {
-        return {
-            title: '🎬 TorrentBridge',
-            action: 'torrentbridge_play',
-            icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>',
-            // Добавляем обработчик прямо в объект
-            onSelect: function() {
-                log('TorrentBridge selected from watch menu');
-                playCurrentMovie();
-            },
-            separator: true
-        };
-    }
-
-    /**
      * Перехват Lampa.Select.show для добавления в подменю "Смотреть"
+     * Исправленная версия - используем правильную структуру
      */
     function hookSelectShow() {
         if (originalSelectShow) return;
@@ -305,13 +286,12 @@
         originalSelectShow = Lampa.Select.show;
         
         Lampa.Select.show = function(options) {
-            // Создаем копию items, чтобы не мутировать оригинал
+            // Создаем копию items
             const items = options.items ? [...options.items] : [];
             
             // Проверяем, что это меню выбора источника
             const isWatchMenu = items.some(item => {
                 const title = String(item.title || '').toLowerCase();
-                // Проверяем наличие характерных для меню "Смотреть" пунктов
                 return title.includes('торрент') || 
                        title.includes('torrent') ||
                        title.includes('онлайн') ||
@@ -326,10 +306,33 @@
             if (isWatchMenu && isEnabled() && !hasBridge) {
                 log('Watch menu detected, adding TorrentBridge');
                 
-                // Создаем пункт меню
-                const bridgeItem = createWatchMenuItem();
-                
-                // Находим позицию для вставки (перед "Трейлеры")
+                // Создаем пункт меню с правильной структурой
+                const bridgeItem = {
+                    // Основные поля
+                    title: 'TorrentBridge',
+                    subtitle: 'Воспроизвести с сервера',
+                    action: 'torrentbridge_play',
+                    template: 'selectbox_icon', // Важно! Используем тот же шаблон что и другие пункты
+                    separator: true,
+                    
+                    // Иконка
+                    icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>',
+                    
+                    // Дополнительные поля для стилизации
+                    $icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>',
+                    
+                    // Свой обработчик
+                    onSelect: function() {
+                        log('TorrentBridge selected from watch menu');
+                        // Закрываем меню перед воспроизведением
+                        Lampa.Controller.toggle('content');
+                        setTimeout(() => {
+                            playCurrentMovie();
+                        }, 100);
+                    }
+                };
+
+                // Находим позицию для вставки
                 const trailerIndex = items.findIndex(item => {
                     const title = String(item.title || '').toLowerCase();
                     return title.includes('трейлер') || title.includes('trailer');
@@ -349,14 +352,16 @@
                 options.onSelect = function(item) {
                     log('Item selected:', item);
                     
+                    // Если выбран наш пункт
                     if (item && item.action === 'torrentbridge_play') {
-                        // Вызываем обработчик из пункта меню
                         if (typeof item.onSelect === 'function') {
                             item.onSelect();
-                        } else {
-                            playCurrentMovie();
                         }
-                    } else if (typeof originalOnSelect === 'function') {
+                        return;
+                    }
+                    
+                    // Иначе вызываем оригинальный обработчик
+                    if (typeof originalOnSelect === 'function') {
                         originalOnSelect(item);
                     }
                 };
@@ -399,11 +404,9 @@
 
         Lampa.Activity.loader(false);
         
-        // Показываем результат
         const message = results.join('\n');
         Lampa.Bell.push({ text: message, time: 5000 });
         
-        // Дополнительно показываем в Select
         Lampa.Select.show({
             title: 'Результаты проверки подключений',
             items: results.map(r => ({ title: r })),
@@ -420,7 +423,6 @@
             icon: MANIFEST.icon
         });
 
-        // Включение/выключение
         Lampa.SettingsApi.addParam({
             component: MANIFEST.component,
             param: {
@@ -487,7 +489,6 @@
             }
         });
 
-        // Настройки Transmission
         const transParams = [
             { key: '_transmission_url', name: 'Transmission URL', def: 'http://192.168.1.112:9091', desc: 'Адрес Transmission (например, http://192.168.1.112:9091)' },
             { key: '_transmission_user', name: 'Transmission Login', def: 'admin', desc: 'Имя пользователя для доступа к Transmission' },
@@ -515,7 +516,6 @@
             });
         });
 
-        // Кнопка проверки
         Lampa.SettingsApi.addParam({
             component: MANIFEST.component,
             param: { 
@@ -532,7 +532,6 @@
             }
         });
 
-        // Информация о настройках
         Lampa.SettingsApi.addParam({
             component: MANIFEST.component,
             param: {
@@ -557,14 +556,12 @@
     }
 
     function init() {
-        log('Init v4.4.0');
+        log('Init v4.5.0');
         createSettings();
         Lampa.Manifest.plugins = MANIFEST;
         
-        // Перехватываем Select.show для подменю "Смотреть"
         hookSelectShow();
         
-        // Слушаем открытие карточки фильма
         Lampa.Listener.follow('full', function(e) {
             if (e.type === 'complite') {
                 setTimeout(() => {
@@ -578,7 +575,7 @@
             }
         });
         
-        log('TorrentBridge v4.4.0 initialized');
+        log('TorrentBridge v4.5.0 initialized');
     }
 
     if (!window.plugin_torrentbridge_ready) {
