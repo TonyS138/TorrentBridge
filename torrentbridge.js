@@ -1,6 +1,6 @@
 /**
- * Torrent Bridge - v4.2.0
- * Кнопка в основном контейнере + в подменю "Смотреть"
+ * Torrent Bridge - v4.3.0
+ * Кнопка в основном контейнере + в подменю "Смотреть" (исправленная версия)
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '4.2.0',
+        version: '4.3.0',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         component: 'torrentbridge',
@@ -251,6 +251,17 @@
     }
 
     /**
+     * Создание иконки для меню "Смотреть"
+     */
+    function createWatchMenuIcon() {
+        return $(`
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+            </svg>
+        `);
+    }
+
+    /**
      * Перехват Lampa.Select.show для добавления в подменю "Смотреть"
      */
     function hookSelectShow() {
@@ -261,30 +272,57 @@
         Lampa.Select.show = function(options) {
             const items = options.items || [];
             
-            // Определяем, что это меню "Смотреть"
-            const isWatchMenu = items.some(item => {
+            // Проверяем, что это меню выбора источника
+            // Ищем характерные элементы: Торренты, Онлайн, Трейлеры
+            const hasTorrent = items.some(item => {
                 const title = String(item.title || '').toLowerCase();
-                return title.includes('shorts') || 
-                       title.includes('трейлер') || 
-                       title.includes('trailer') ||
+                return title.includes('торрент') || 
+                       title.includes('torrent') ||
                        title.includes('онлайн') ||
-                       title.includes('online');
+                       title.includes('online') ||
+                       title.includes('трейлер') ||
+                       title.includes('trailer');
             });
 
-            if (isWatchMenu && isEnabled()) {
+            // Также проверяем наличие иконок, характерных для меню "Смотреть"
+            const hasPlayIcons = items.some(item => {
+                if (!item.icon && !item.$icon) return false;
+                const iconHtml = String(item.icon || item.$icon || '');
+                return iconHtml.includes('sprite-torrent') || 
+                       iconHtml.includes('sprite-play') ||
+                       iconHtml.includes('sprite-trailer');
+            });
+
+            // Проверяем, есть ли уже наш пункт
+            const hasBridge = items.some(item => item.action === 'torrentbridge_play');
+
+            if ((hasTorrent || hasPlayIcons) && isEnabled() && !hasBridge) {
                 log('Watch menu detected, adding TorrentBridge');
                 
-                // Добавляем наш пункт
-                items.push({
+                // Создаем элемент для меню "Смотреть"
+                const bridgeItem = {
                     title: '🎬 TorrentBridge',
                     action: 'torrentbridge_play',
+                    icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>',
                     separator: true
+                };
+
+                // Добавляем перед "Трейлеры" или в конец
+                const trailerIndex = items.findIndex(item => {
+                    const title = String(item.title || '').toLowerCase();
+                    return title.includes('трейлер') || title.includes('trailer');
                 });
+
+                if (trailerIndex !== -1) {
+                    items.splice(trailerIndex, 0, bridgeItem);
+                } else {
+                    items.push(bridgeItem);
+                }
 
                 const originalOnSelect = options.onSelect;
                 
                 options.onSelect = function(item) {
-                    if (item.action === 'torrentbridge_play') {
+                    if (item && item.action === 'torrentbridge_play') {
                         log('TorrentBridge selected from watch menu');
                         playCurrentMovie();
                     } else if (originalOnSelect) {
@@ -368,7 +406,7 @@
     }
 
     function init() {
-        log('Init v4.2');
+        log('Init v4.3');
         createSettings();
         Lampa.Manifest.plugins = MANIFEST;
         
