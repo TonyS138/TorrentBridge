@@ -1,6 +1,7 @@
 /**
- * Torrent Bridge - v4.3.0
- * Кнопка в основном контейнере + в подменю "Смотреть" (исправленная версия)
+ * Torrent Bridge - v4.4.0
+ * Кнопка в основном контейнере + в подменю "Смотреть" (исправлена навигация)
+ * + выбор плеера (встроенный/внешний)
  */
 
 (function () {
@@ -8,7 +9,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '4.3.0',
+        version: '4.4.0',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         component: 'torrentbridge',
@@ -38,6 +39,10 @@
             pass: Lampa.Storage.get(MANIFEST.component + '_transmission_pass', 'admin'),
             path: Lampa.Storage.get(MANIFEST.component + '_transmission_path', '/transmission/rpc')
         };
+    }
+
+    function getPlayerType() {
+        return Lampa.Storage.get(MANIFEST.component + '_player_type', 'internal');
     }
 
     function transmissionRequest(method, args, retry = true) {
@@ -121,11 +126,20 @@
             const streamUrl = getStreamUrl(hash);
             log('Stream:', streamUrl);
 
-            Lampa.Player.play({
-                url: streamUrl,
-                title: title || 'Torrent',
-                timeline: false
-            });
+            const playerType = getPlayerType();
+            
+            if (playerType === 'external') {
+                // Внешний плеер - открываем в новом окне/вкладке
+                window.open(streamUrl, '_blank');
+                Lampa.Bell.push({ text: 'Открыто во внешнем плеере' });
+            } else {
+                // Встроенный плеер Lampa
+                Lampa.Player.play({
+                    url: streamUrl,
+                    title: title || 'Torrent',
+                    timeline: false
+                });
+            }
         } catch (e) {
             log('Play error:', e);
             Lampa.Bell.push({ text: 'Ошибка: ' + e.message });
@@ -210,16 +224,29 @@
             return;
         }
 
-        const torrent = await findTorrent(currentMovie);
-        if (!torrent?.hashString) {
-            Lampa.Bell.push({ text: 'Торрент не найден в Transmission' });
-            return;
-        }
+        Lampa.Activity.loader(true);
+        Lampa.Bell.push({ text: 'Поиск торрента...' });
 
-        const magnet = await getFullMagnet(torrent.id) || 
-            `magnet:?xt=urn:btih:${torrent.hashString}&dn=${encodeURIComponent(torrent.name)}`;
-        
-        await playByMagnet(magnet, torrent.name);
+        try {
+            const torrent = await findTorrent(currentMovie);
+            if (!torrent?.hashString) {
+                Lampa.Activity.loader(false);
+                Lampa.Bell.push({ text: 'Торрент не найден в Transmission' });
+                return;
+            }
+
+            Lampa.Bell.push({ text: 'Получение magnet-ссылки...' });
+            
+            const magnet = await getFullMagnet(torrent.id) || 
+                `magnet:?xt=urn:btih:${torrent.hashString}&dn=${encodeURIComponent(torrent.name)}`;
+            
+            Lampa.Activity.loader(false);
+            await playByMagnet(magnet, torrent.name);
+        } catch (e) {
+            Lampa.Activity.loader(false);
+            log('Play error:', e);
+            Lampa.Bell.push({ text: 'Ошибка: ' + e.message });
+        }
     }
 
     /**
@@ -233,7 +260,9 @@
                 </svg>
                 <span>TorrentBridge</span>
             </div>
-        `).on('hover:enter', playCurrentMovie);
+        `).on('hover:enter', function() {
+            playCurrentMovie();
+        });
     }
 
     /**
@@ -251,14 +280,20 @@
     }
 
     /**
-     * Создание иконки для меню "Смотреть"
+     * Создание пункта для меню "Смотреть"
      */
-    function createWatchMenuIcon() {
-        return $(`
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-            </svg>
-        `);
+    function createWatchMenuItem() {
+        return {
+            title: '🎬 TorrentBridge',
+            action: 'torrentbridge_play',
+            icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>',
+            // Добавляем обработчик прямо в объект
+            onSelect: function() {
+                log('TorrentBridge selected from watch menu');
+                playCurrentMovie();
+            },
+            separator: true
+        };
     }
 
     /**
@@ -270,12 +305,13 @@
         originalSelectShow = Lampa.Select.show;
         
         Lampa.Select.show = function(options) {
-            const items = options.items || [];
+            // Создаем копию items, чтобы не мутировать оригинал
+            const items = options.items ? [...options.items] : [];
             
             // Проверяем, что это меню выбора источника
-            // Ищем характерные элементы: Торренты, Онлайн, Трейлеры
-            const hasTorrent = items.some(item => {
+            const isWatchMenu = items.some(item => {
                 const title = String(item.title || '').toLowerCase();
+                // Проверяем наличие характерных для меню "Смотреть" пунктов
                 return title.includes('торрент') || 
                        title.includes('torrent') ||
                        title.includes('онлайн') ||
@@ -284,53 +320,52 @@
                        title.includes('trailer');
             });
 
-            // Также проверяем наличие иконок, характерных для меню "Смотреть"
-            const hasPlayIcons = items.some(item => {
-                if (!item.icon && !item.$icon) return false;
-                const iconHtml = String(item.icon || item.$icon || '');
-                return iconHtml.includes('sprite-torrent') || 
-                       iconHtml.includes('sprite-play') ||
-                       iconHtml.includes('sprite-trailer');
-            });
-
             // Проверяем, есть ли уже наш пункт
             const hasBridge = items.some(item => item.action === 'torrentbridge_play');
 
-            if ((hasTorrent || hasPlayIcons) && isEnabled() && !hasBridge) {
+            if (isWatchMenu && isEnabled() && !hasBridge) {
                 log('Watch menu detected, adding TorrentBridge');
                 
-                // Создаем элемент для меню "Смотреть"
-                const bridgeItem = {
-                    title: '🎬 TorrentBridge',
-                    action: 'torrentbridge_play',
-                    icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>',
-                    separator: true
-                };
-
-                // Добавляем перед "Трейлеры" или в конец
+                // Создаем пункт меню
+                const bridgeItem = createWatchMenuItem();
+                
+                // Находим позицию для вставки (перед "Трейлеры")
                 const trailerIndex = items.findIndex(item => {
                     const title = String(item.title || '').toLowerCase();
                     return title.includes('трейлер') || title.includes('trailer');
                 });
 
+                // Вставляем в найденную позицию или в конец
                 if (trailerIndex !== -1) {
                     items.splice(trailerIndex, 0, bridgeItem);
                 } else {
                     items.push(bridgeItem);
                 }
 
+                // Сохраняем оригинальный onSelect
                 const originalOnSelect = options.onSelect;
                 
+                // Переопределяем onSelect
                 options.onSelect = function(item) {
+                    log('Item selected:', item);
+                    
                     if (item && item.action === 'torrentbridge_play') {
-                        log('TorrentBridge selected from watch menu');
-                        playCurrentMovie();
-                    } else if (originalOnSelect) {
+                        // Вызываем обработчик из пункта меню
+                        if (typeof item.onSelect === 'function') {
+                            item.onSelect();
+                        } else {
+                            playCurrentMovie();
+                        }
+                    } else if (typeof originalOnSelect === 'function') {
                         originalOnSelect(item);
                     }
                 };
+
+                // Обновляем items в options
+                options.items = items;
             }
 
+            // Вызываем оригинальный метод с обновленными options
             return originalSelectShow.call(this, options);
         };
         
@@ -338,6 +373,9 @@
     }
 
     async function testConnection() {
+        Lampa.Activity.loader(true);
+        let results = [];
+
         try {
             const r = await $.ajax({
                 url: `${getTorrServerUrl()}/echo`,
@@ -345,17 +383,34 @@
                 dataType: 'text',
                 timeout: 5000
             });
-            Lampa.Bell.push({ text: r?.includes('MatriX') ? '✅ TorrServer доступен' : '⚠️ TorrServer: ' + r });
+            const status = r?.includes('MatriX') ? '✅' : '⚠️';
+            results.push(`${status} TorrServer: ${getTorrServerUrl()}`);
         } catch (e) {
-            Lampa.Bell.push({ text: '❌ TorrServer: ' + e.message });
+            results.push(`❌ TorrServer: ${e.message}`);
         }
 
         try {
             await transmissionRequest('session-get', {});
-            Lampa.Bell.push({ text: '✅ Transmission доступен' });
+            const config = getTransmissionConfig();
+            results.push(`✅ Transmission: ${config.url}${config.path}`);
         } catch (e) {
-            Lampa.Bell.push({ text: '❌ Transmission: ' + e.message });
+            results.push(`❌ Transmission: ${e.message}`);
         }
+
+        Lampa.Activity.loader(false);
+        
+        // Показываем результат
+        const message = results.join('\n');
+        Lampa.Bell.push({ text: message, time: 5000 });
+        
+        // Дополнительно показываем в Select
+        Lampa.Select.show({
+            title: 'Результаты проверки подключений',
+            items: results.map(r => ({ title: r })),
+            onBack: () => {
+                Lampa.Controller.toggle('content');
+            }
+        });
     }
 
     function createSettings() {
@@ -365,48 +420,144 @@
             icon: MANIFEST.icon
         });
 
-        const params = [
-            { key: '_enabled', name: 'Активировать', type: 'trigger', def: false },
-            { key: '_torrserver_url', name: 'TorrServer URL', type: 'input', def: 'http://192.168.1.101:8090' },
-            { key: '_transmission_url', name: 'Transmission URL', type: 'input', def: 'http://192.168.1.112:9091' },
-            { key: '_transmission_user', name: 'Transmission Login', type: 'input', def: 'admin' },
-            { key: '_transmission_pass', name: 'Transmission Password', type: 'input', def: 'admin' },
-            { key: '_transmission_path', name: 'Transmission Path', type: 'input', def: '/transmission/rpc' }
+        // Включение/выключение
+        Lampa.SettingsApi.addParam({
+            component: MANIFEST.component,
+            param: {
+                name: MANIFEST.component + '_enabled',
+                type: 'trigger',
+                values: Lampa.Storage.get(MANIFEST.component + '_enabled', false),
+                default: false
+            },
+            field: { 
+                name: 'Активировать плагин',
+                description: 'Добавляет кнопку "TorrentBridge" в карточку фильма и меню "Смотреть"'
+            },
+            onChange: function(value) {
+                const enabled = value === true || value === 'true';
+                Lampa.Storage.set(MANIFEST.component + '_enabled', enabled === true);
+                Lampa.Bell.push({ text: enabled ? 'TorrentBridge активирован' : 'TorrentBridge деактивирован' });
+                Lampa.Settings.update();
+            }
+        });
+
+        // Выбор плеера
+        Lampa.SettingsApi.addParam({
+            component: MANIFEST.component,
+            param: {
+                name: MANIFEST.component + '_player_type',
+                type: 'select',
+                values: {
+                    'internal': 'Встроенный плеер Lampa',
+                    'external': 'Внешний плеер (браузер)'
+                },
+                default: 'internal'
+            },
+            field: { 
+                name: 'Выбор плеера',
+                description: 'Встроенный - воспроизведение внутри Lampa, Внешний - открытие в новой вкладке'
+            },
+            onChange: function(value) {
+                Lampa.Storage.set(MANIFEST.component + '_player_type', value);
+                const names = {
+                    'internal': 'Встроенный плеер Lampa',
+                    'external': 'Внешний плеер (браузер)'
+                };
+                Lampa.Bell.push({ text: 'Плеер: ' + (names[value] || value) });
+                Lampa.Settings.update();
+            }
+        });
+
+        // Настройки TorrServer
+        Lampa.SettingsApi.addParam({
+            component: MANIFEST.component,
+            param: {
+                name: MANIFEST.component + '_torrserver_url',
+                type: 'input',
+                values: Lampa.Storage.get(MANIFEST.component + '_torrserver_url', 'http://192.168.1.101:8090'),
+                default: 'http://192.168.1.101:8090'
+            },
+            field: { 
+                name: 'TorrServer URL',
+                description: 'Адрес вашего TorrServer (например, http://192.168.1.101:8090)'
+            },
+            onChange: function(value) {
+                Lampa.Storage.set(MANIFEST.component + '_torrserver_url', value);
+                Lampa.Settings.update();
+            }
+        });
+
+        // Настройки Transmission
+        const transParams = [
+            { key: '_transmission_url', name: 'Transmission URL', def: 'http://192.168.1.112:9091', desc: 'Адрес Transmission (например, http://192.168.1.112:9091)' },
+            { key: '_transmission_user', name: 'Transmission Login', def: 'admin', desc: 'Имя пользователя для доступа к Transmission' },
+            { key: '_transmission_pass', name: 'Transmission Password', def: 'admin', desc: 'Пароль для доступа к Transmission' },
+            { key: '_transmission_path', name: 'Transmission Path', def: '/transmission/rpc', desc: 'Путь к RPC API (обычно /transmission/rpc)' }
         ];
 
-        params.forEach(p => {
+        transParams.forEach(p => {
             Lampa.SettingsApi.addParam({
                 component: MANIFEST.component,
                 param: {
                     name: MANIFEST.component + p.key,
-                    type: p.type,
+                    type: 'input',
                     values: Lampa.Storage.get(MANIFEST.component + p.key, p.def),
-                    default: false
+                    default: p.def
                 },
-                field: { name: p.name },
+                field: { 
+                    name: p.name,
+                    description: p.desc
+                },
                 onChange: function(value) {
-                    if (p.type === 'trigger') {
-                        const enabled = value === true || value === 'true';
-                        Lampa.Storage.set(MANIFEST.component + p.key, enabled === true);
-                        Lampa.Bell.push({ text: enabled ? 'Активирован' : 'Деактивирован' });
-                    } else {
-                        Lampa.Storage.set(MANIFEST.component + p.key, value);
-                    }
+                    Lampa.Storage.set(MANIFEST.component + p.key, value);
                     Lampa.Settings.update();
                 }
             });
         });
 
+        // Кнопка проверки
         Lampa.SettingsApi.addParam({
             component: MANIFEST.component,
-            param: { name: MANIFEST.component + '_test', type: 'button' },
-            field: { name: 'Проверить подключение' },
-            onChange: testConnection
+            param: { 
+                name: MANIFEST.component + '_test', 
+                type: 'button',
+                default: false
+            },
+            field: { 
+                name: '🔌 Проверить подключения',
+                description: 'Тестирует связь с TorrServer и Transmission'
+            },
+            onChange: function() {
+                testConnection();
+            }
+        });
+
+        // Информация о настройках
+        Lampa.SettingsApi.addParam({
+            component: MANIFEST.component,
+            param: {
+                name: MANIFEST.component + '_info',
+                type: 'string',
+                default: ''
+            },
+            field: {
+                name: 'Текущие настройки',
+                description: function() {
+                    const tsUrl = getTorrServerUrl();
+                    const trConfig = getTransmissionConfig();
+                    const player = getPlayerType();
+                    const playerNames = {
+                        'internal': 'Встроенный',
+                        'external': 'Внешний'
+                    };
+                    return `TorrServer: ${tsUrl}\nTransmission: ${trConfig.url}${trConfig.path}\nПлеер: ${playerNames[player] || player}`;
+                }
+            }
         });
     }
 
     function init() {
-        log('Init v4.3');
+        log('Init v4.4.0');
         createSettings();
         Lampa.Manifest.plugins = MANIFEST;
         
@@ -417,7 +568,8 @@
         Lampa.Listener.follow('full', function(e) {
             if (e.type === 'complite') {
                 setTimeout(() => {
-                    const movie = e.object.movie || e.object;
+                    const render = e.object.activity.render();
+                    const movie = render.model || e.object.movie || e.object;
                     if (movie?.id) {
                         currentMovie = movie;
                         addMainButton(movie);
@@ -425,6 +577,8 @@
                 }, 1000);
             }
         });
+        
+        log('TorrentBridge v4.4.0 initialized');
     }
 
     if (!window.plugin_torrentbridge_ready) {
