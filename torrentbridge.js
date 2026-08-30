@@ -1,6 +1,6 @@
 /**
- * Torrent Bridge - v4.2.0
- * Кнопка в основном контейнере + в подменю "Смотреть"
+ * Torrent Bridge - v4.1.1
+ * Просто переименованная кнопка
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '4.2.0',
+        version: '4.1.1',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         component: 'torrentbridge',
@@ -16,8 +16,6 @@
     };
 
     let transmissionSessionId = null;
-    let currentMovie = null;
-    let originalSelectShow = null;
 
     function log(...args) {
         console.log('[TorrentBridge]', ...args);
@@ -201,102 +199,39 @@
         }
     }
 
-    /**
-     * Запуск торрента для текущего фильма
-     */
-    async function playCurrentMovie() {
-        if (!currentMovie?.id) {
-            Lampa.Bell.push({ text: 'Нет данных фильма' });
-            return;
-        }
+    async function addButton(movieData) {
+        if (!isEnabled()) return;
 
-        const torrent = await findTorrent(currentMovie);
-        if (!torrent?.hashString) {
-            Lampa.Bell.push({ text: 'Торрент не найден в Transmission' });
-            return;
-        }
+        const movie = movieData.movie || movieData;
+        if (!movie?.id) return;
 
-        const magnet = await getFullMagnet(torrent.id) || 
-            `magnet:?xt=urn:btih:${torrent.hashString}&dn=${encodeURIComponent(torrent.name)}`;
-        
-        await playByMagnet(magnet, torrent.name);
-    }
-
-    /**
-     * Создание кнопки для основного контейнера
-     */
-    function createMainButton() {
-        return $(`
+        const $btn = $(`
             <div class="full-start__button selector button--torrent_bridge">
                 <svg viewBox="0 0 24 24" fill="currentColor" style="width:24px;height:24px">
                     <path d="M8 5v14l11-7z"/>
                 </svg>
                 <span>TorrentBridge</span>
             </div>
-        `).on('hover:enter', playCurrentMovie);
-    }
+        `);
 
-    /**
-     * Добавление кнопки в основной контейнер
-     */
-    function addMainButton(movie) {
-        currentMovie = movie;
-        
+        $btn.on('hover:enter', async function() {
+            const torrent = await findTorrent(movie);
+            if (!torrent?.hashString) {
+                Lampa.Bell.push({ text: 'Торрент не найден' });
+                return;
+            }
+
+            const magnet = await getFullMagnet(torrent.id) || 
+                `magnet:?xt=urn:btih:${torrent.hashString}&dn=${encodeURIComponent(torrent.name)}`;
+            
+            await playByMagnet(magnet, torrent.name);
+        });
+
         const container = $('.full-start-new__buttons');
         if (container.length) {
             container.find('.button--torrent_bridge').remove();
-            container.append(createMainButton());
-            log('Main button added');
+            container.append($btn);
         }
-    }
-
-    /**
-     * Перехват Lampa.Select.show для добавления в подменю "Смотреть"
-     */
-    function hookSelectShow() {
-        if (originalSelectShow) return;
-
-        originalSelectShow = Lampa.Select.show;
-        
-        Lampa.Select.show = function(options) {
-            const items = options.items || [];
-            
-            // Определяем, что это меню "Смотреть"
-            const isWatchMenu = items.some(item => {
-                const title = String(item.title || '').toLowerCase();
-                return title.includes('shorts') || 
-                       title.includes('трейлер') || 
-                       title.includes('trailer') ||
-                       title.includes('онлайн') ||
-                       title.includes('online');
-            });
-
-            if (isWatchMenu && isEnabled()) {
-                log('Watch menu detected, adding TorrentBridge');
-                
-                // Добавляем наш пункт
-                items.push({
-                    title: '🎬 TorrentBridge',
-                    action: 'torrentbridge_play',
-                    separator: true
-                });
-
-                const originalOnSelect = options.onSelect;
-                
-                options.onSelect = function(item) {
-                    if (item.action === 'torrentbridge_play') {
-                        log('TorrentBridge selected from watch menu');
-                        playCurrentMovie();
-                    } else if (originalOnSelect) {
-                        originalOnSelect(item);
-                    }
-                };
-            }
-
-            return originalSelectShow.call(this, options);
-        };
-        
-        log('Select.show hooked');
     }
 
     async function testConnection() {
@@ -368,23 +303,13 @@
     }
 
     function init() {
-        log('Init v4.2');
+        log('Init v4.1.1');
         createSettings();
         Lampa.Manifest.plugins = MANIFEST;
         
-        // Перехватываем Select.show для подменю "Смотреть"
-        hookSelectShow();
-        
-        // Слушаем открытие карточки фильма
         Lampa.Listener.follow('full', function(e) {
             if (e.type === 'complite') {
-                setTimeout(() => {
-                    const movie = e.object.movie || e.object;
-                    if (movie?.id) {
-                        currentMovie = movie;
-                        addMainButton(movie);
-                    }
-                }, 1000);
+                setTimeout(() => addButton(e.object), 1000);
             }
         });
     }
