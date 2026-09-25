@@ -318,10 +318,6 @@
 
     // ==================== ДОБАВЛЕНИЕ В TRANSMISSION ====================
 
-    /**
-     * Добавляет торрент в Transmission.
-     * Принимает объект торрента из Lampa (e.element) с полем MagnetUri или Link.
-     */
     function addTorrentToTransmission(torrentElement, movie) {
         var magnet = torrentElement.MagnetUri || torrentElement.Link || torrentElement.magnet || '';
         
@@ -332,13 +328,11 @@
 
         showLoader();
 
-        // Пытаемся построить метку из текущего фильма
         var label = '';
         if (movie && movie.id) {
             label = buildMetadataLabel(movie);
         }
 
-        // Путь сохранения
         var dtype = (movie && movie.first_air_date) ? 'TV' : 'Movies';
         var downloadDir = Lampa.Storage.get(CONFIG_PREFIX + '_path_' + dtype, '');
 
@@ -376,7 +370,6 @@
                 log('Could not get active movie:', err);
             }
 
-            // Добавляем пункт в меню
             e.menu.push({
                 title: 'TorrentBridge: скачать в Transmission',
                 onSelect: function () {
@@ -894,4 +887,70 @@
                 default: false
             },
             field: { name: '🔌 Проверить подключения' },
-            onChange
+            onChange: function () { testConnections(); }
+        });
+
+        Lampa.SettingsApi.addParam({
+            component: MANIFEST.component,
+            param: {
+                name: CONFIG_PREFIX + '_info',
+                type: 'static',
+                default: ''
+            },
+            field: {
+                name: 'Версия 6.1.0',
+                description: 'Автономный плагин. Не требует TorrentManager.'
+            }
+        });
+    }
+
+    // ==================== ИНИЦИАЛИЗАЦИЯ ====================
+
+    function init() {
+        log('Init TorrentBridge v6.1.0');
+
+        createSettings();
+        Lampa.Manifest.plugins = MANIFEST;
+
+        hookSelectShow();
+        hookTorrentMenu();
+
+        Lampa.Listener.follow('full', function (e) {
+            if (e.type === 'complite') {
+                setTimeout(function () {
+                    try {
+                        var render = e.object.activity.render();
+                        var movie = render.model || e.object.movie || e.object;
+
+                        if (movie && movie.id) {
+                            if (isEnabled()) {
+                                addMainButtons(movie);
+                            } else {
+                                currentMovie = movie;
+                            }
+                        }
+                    } catch (err) {
+                        error('Error in full handler:', err);
+                    }
+                }, 1000);
+            }
+        });
+
+        log('TorrentBridge v6.1.0 initialized');
+    }
+
+    if (!window.plugin_torrentbridge_v6_ready) {
+        window.plugin_torrentbridge_v6_ready = true;
+
+        if (window.appready) {
+            init();
+        } else {
+            Lampa.Listener.follow('app', function (e) {
+                if (e.type === 'ready') {
+                    setTimeout(init, 500);
+                }
+            });
+        }
+    }
+
+})();
