@@ -1,5 +1,7 @@
 /**
- * Torrent Bridge - v6.0.0
+ * Torrent Bridge - v6.0.1
+ * Полностью автономный плагин: собственные настройки Transmission + TorrServer
+ * Работает без TorrentManager
  */
 
 (function () {
@@ -7,7 +9,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '6.0.0',
+        version: '6.0.1',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         component: 'torrentbridge',
@@ -30,6 +32,48 @@
         var args = Array.prototype.slice.call(arguments);
         args.unshift('[TorrentBridge ERROR]');
         console.error.apply(console, args);
+    }
+
+    // ==================== ЛОАДЕР (совместимость с разными версиями Lampa) ====================
+
+    function showLoader() {
+        try {
+            if (Lampa.Loading && typeof Lampa.Loading.start === 'function') {
+                Lampa.Loading.start(function () {});
+                return;
+            }
+        } catch (e) { /* ignore */ }
+
+        try {
+            if (Lampa.Activity && typeof Lampa.Activity.loader === 'function') {
+                Lampa.Activity.loader(true);
+                return;
+            }
+        } catch (e) { /* ignore */ }
+
+        try {
+            $('.activity__loader').addClass('active');
+        } catch (e) { /* ignore */ }
+    }
+
+    function hideLoader() {
+        try {
+            if (Lampa.Loading && typeof Lampa.Loading.stop === 'function') {
+                Lampa.Loading.stop();
+                return;
+            }
+        } catch (e) { /* ignore */ }
+
+        try {
+            if (Lampa.Activity && typeof Lampa.Activity.loader === 'function') {
+                Lampa.Activity.loader(false);
+                return;
+            }
+        } catch (e) { /* ignore */ }
+
+        try {
+            $('.activity__loader').removeClass('active');
+        } catch (e) { /* ignore */ }
     }
 
     // ==================== УТИЛИТЫ КОНФИГА ====================
@@ -409,7 +453,7 @@
 
     function playStream(url, title, poster) {
         log('Playing:', url);
-        Lampa.Activity.loader(false);
+        hideLoader();
 
         var playerType = getPlayerType();
 
@@ -438,12 +482,12 @@
             return;
         }
 
-        Lampa.Activity.loader(true);
+        showLoader();
         Lampa.Bell.push({ text: 'Поиск торрента в Transmission...' });
 
         return findTorrentForMovie(movie).then(function (torrent) {
             if (!torrent) {
-                Lampa.Activity.loader(false);
+                hideLoader();
                 Lampa.Bell.push({ text: 'Торрент не найден. Сначала добавьте его в Transmission.' });
                 return;
             }
@@ -520,7 +564,7 @@
                             return;
                         }
 
-                        Lampa.Activity.loader(false);
+                        hideLoader();
 
                         var fileItems = mediaFiles.map(function (f) {
                             return {
@@ -544,7 +588,7 @@
                 });
             });
         }).catch(function (e) {
-            Lampa.Activity.loader(false);
+            hideLoader();
             error('playFromTransmission error:', e);
             Lampa.Bell.push({ text: 'Ошибка: ' + (e.message || 'не удалось запустить') });
         });
@@ -556,17 +600,17 @@
             return;
         }
 
-        Lampa.Activity.loader(true);
+        showLoader();
 
         var label = buildMetadataLabel(movie);
         var dtype = movie.first_air_date ? 'TV' : 'Movies';
         var downloadDir = Lampa.Storage.get(CONFIG_PREFIX + '_path_' + dtype, '');
 
         return transmissionSendTask(magnetUri, [label], downloadDir).then(function () {
-            Lampa.Activity.loader(false);
+            hideLoader();
             Lampa.Bell.push({ text: '✅ Торрент добавлен в Transmission' });
         }).catch(function (e) {
-            Lampa.Activity.loader(false);
+            hideLoader();
             error('addMovieToTransmission error:', e);
             Lampa.Bell.push({ text: '❌ Ошибка: ' + (e.message || 'не удалось добавить') });
         });
@@ -690,7 +734,7 @@
     // ==================== ТЕСТИРОВАНИЕ ====================
 
     function testConnections() {
-        Lampa.Activity.loader(true);
+        showLoader();
         var results = [];
 
         return torrServerRequest('/echo', 'GET').then(function (r) {
@@ -706,7 +750,7 @@
                 results.push('❌ Transmission: ' + (e.message || 'недоступен'));
             });
         }).then(function () {
-            Lampa.Activity.loader(false);
+            hideLoader();
 
             Lampa.Select.show({
                 title: 'Результаты проверки',
@@ -906,7 +950,7 @@
                 default: ''
             },
             field: {
-                name: 'Версия 6.0.0',
+                name: 'Версия 6.0.1',
                 description: 'Автономный плагин. Не требует TorrentManager.'
             }
         });
@@ -915,7 +959,7 @@
     // ==================== ИНИЦИАЛИЗАЦИЯ ====================
 
     function init() {
-        log('Init TorrentBridge v6.0.0');
+        log('Init TorrentBridge v6.0.1');
 
         createSettings();
         Lampa.Manifest.plugins = MANIFEST;
@@ -943,7 +987,7 @@
             }
         });
 
-        log('TorrentBridge v6.0.0 initialized');
+        log('TorrentBridge v6.0.1 initialized');
     }
 
     if (!window.plugin_torrentbridge_v6_ready) {
