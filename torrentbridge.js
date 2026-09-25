@@ -1,6 +1,6 @@
 /**
- * Torrent Bridge - v6.3.2
- * + Диагностика подключений (для отладки на Android)
+ * Torrent Bridge - v6.3.3
+ * + Диагностика через Lampa.Select (совместимо со всеми сборками Lampa)
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '6.3.2',
+        version: '6.3.3',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         component: 'torrentbridge',
@@ -100,67 +100,6 @@
             @keyframes tb-pulse {
                 0%, 100% { transform: scale(1); }
                 50%      { transform: scale(1.08); }
-            }
-
-            /* Диагностический отчёт */
-            .tb-diag {
-                padding: 1.2em;
-                font-family: monospace;
-                font-size: 0.9em;
-                line-height: 1.5;
-                max-height: 60vh;
-                overflow-y: auto;
-                background: rgba(0,0,0,0.3);
-                border-radius: 6px;
-            }
-
-            .tb-diag__section {
-                margin-bottom: 1.2em;
-                padding-bottom: 1em;
-                border-bottom: 1px solid rgba(255,255,255,0.1);
-            }
-
-            .tb-diag__section:last-child {
-                border-bottom: none;
-                margin-bottom: 0;
-            }
-
-            .tb-diag__title {
-                font-weight: bold;
-                font-size: 1.05em;
-                margin-bottom: 0.6em;
-                color: #fff;
-            }
-
-            .tb-diag__row {
-                display: flex;
-                gap: 0.6em;
-                margin-bottom: 0.35em;
-                flex-wrap: wrap;
-            }
-
-            .tb-diag__key {
-                opacity: 0.65;
-                min-width: 9em;
-            }
-
-            .tb-diag__value {
-                flex: 1;
-                word-break: break-all;
-            }
-
-            .tb-diag__ok    { color: #4ade80; }
-            .tb-diag__warn  { color: #fbbf24; }
-            .tb-diag__err   { color: #f87171; }
-            .tb-diag__info  { color: #93c5fd; }
-
-            .tb-diag__hint {
-                margin-top: 0.8em;
-                padding: 0.8em;
-                background: rgba(147, 197, 253, 0.1);
-                border-left: 3px solid #93c5fd;
-                border-radius: 4px;
-                line-height: 1.5;
             }
         </style>
     `;
@@ -465,9 +404,6 @@
 
     // ==================== ДИАГНОСТИКА ====================
 
-    /**
-     * Извлекает host:port из URL
-     */
     function extractHostPort(url) {
         try {
             var m = String(url).match(/^https?:\/\/([^\/]+)/i);
@@ -477,9 +413,6 @@
         }
     }
 
-    /**
-     * Тест 1: обычный запрос через Lampa.Reguest (тот же, что в основном коде)
-     */
     function diagLampaRequest(url, options) {
         options = options || {};
         return new Promise(function (resolve) {
@@ -521,9 +454,6 @@
         });
     }
 
-    /**
-     * Тест 2: fetch с явным таймаутом через AbortController
-     */
     function diagFetch(url, options) {
         options = options || {};
         var t0 = Date.now();
@@ -533,7 +463,7 @@
             return Promise.resolve({
                 ok: false,
                 method: 'fetch',
-                message: 'fetch не поддерживается в этом окружении',
+                message: 'fetch не поддерживается',
                 time: 0
             });
         }
@@ -573,8 +503,7 @@
                     method: 'fetch',
                     time: Date.now() - t0,
                     status: res.status,
-                    statusText: res.statusText,
-                    response: '(не удалось прочитать тело)'
+                    statusText: res.statusText
                 };
             });
         }).catch(function (err) {
@@ -589,9 +518,6 @@
         });
     }
 
-    /**
-     * Тест 3: XHR (низкоуровневый, показывает точную причину)
-     */
     function diagXHR(url, options) {
         options = options || {};
         var t0 = Date.now();
@@ -667,10 +593,6 @@
         });
     }
 
-    /**
-     * Тест 4: HTTP ping через <img> — не подпадает под CORS
-     * Если картинка грузится — значит сеть есть, но JS-запросы блокируются CORS
-     */
     function diagImagePing(url) {
         var t0 = Date.now();
         return new Promise(function (resolve) {
@@ -702,19 +624,15 @@
                     ok: false,
                     method: 'Image ping',
                     time: Date.now() - t0,
-                    message: 'ошибка загрузки (сервер недоступен или отклонил запрос)'
+                    message: 'ошибка загрузки (сервер недоступен)'
                 });
             };
 
-            // Добавляем случайный параметр, чтобы браузер не использовал кэш
             var sep = url.indexOf('?') === -1 ? '?' : '&';
             img.src = url + sep + '_tb_ping=' + Date.now();
         });
     }
 
-    /**
-     * Полная диагностика одного сервера
-     */
     function diagnoseServer(name, baseUrl, testPath, options) {
         options = options || {};
         var fullUrl = baseUrl + testPath;
@@ -727,7 +645,6 @@
             tests: []
         };
 
-        // Тест 1: Image ping (проверка сети до сервера без CORS)
         return diagImagePing(baseUrl + '/').then(function (r) {
             report.tests.push({ label: 'Image ping (без CORS)', result: r });
             return diagLampaRequest(fullUrl, options);
@@ -743,101 +660,11 @@
         });
     }
 
-    /**
-     * Формирует HTML-отчёт по серверу
-     */
-    function buildReportHtml(report) {
-        var html = '<div class="tb-diag__section">';
-        html += '<div class="tb-diag__title">🌐 ' + report.name + '</div>';
-
-        html += '<div class="tb-diag__row">' +
-            '<span class="tb-diag__key">Адрес:</span>' +
-            '<span class="tb-diag__value">' + report.testUrl + '</span>' +
-            '</div>';
-
-        html += '<div class="tb-diag__row">' +
-            '<span class="tb-diag__key">Хост:</span>' +
-            '<span class="tb-diag__value">' + report.host + '</span>' +
-            '</div>';
-
-        html += '<div class="tb-diag__row">' +
-            '<span class="tb-diag__key">Протокол:</span>' +
-            '<span class="tb-diag__value">' + report.protocol +
-            (report.protocol === 'HTTP' ? ' <span class="tb-diag__warn">⚠ Android может блокировать cleartext</span>' : '') +
-            '</span>' +
-            '</div>';
-
-        report.tests.forEach(function (t) {
-            var r = t.result;
-            var cls = r.ok ? 'tb-diag__ok' : 'tb-diag__err';
-            var icon = r.ok ? '✅' : '❌';
-
-            html += '<div class="tb-diag__row" style="margin-top:0.6em">' +
-                '<span class="tb-diag__key">' + t.label + ':</span>' +
-                '<span class="tb-diag__value ' + cls + '">' + icon + ' ';
-
-            if (r.ok) {
-                html += 'OK (' + r.time + 'ms)';
-                if (r.status) html += ', HTTP ' + r.status;
-            } else {
-                if (r.message) html += r.message;
-                if (r.status) html += ' [HTTP ' + r.status + (r.statusText ? ' ' + r.statusText : '') + ']';
-                if (r.time) html += ' (' + r.time + 'ms)';
-            }
-
-            html += '</span></div>';
-
-            if (r.cors && r.cors !== '(нет)') {
-                html += '<div class="tb-diag__row"><span class="tb-diag__key"></span>' +
-                    '<span class="tb-diag__value tb-diag__info">CORS: ' + r.cors + '</span></div>';
-            }
-        });
-
-        // Подсказки
-        var allFailed = report.tests.every(function (t) { return !t.result.ok; });
-        var imgPingOk = report.tests[0] && report.tests[0].result.ok;
-        var jsFailed = report.tests.slice(1).every(function (t) { return !t.result.ok; });
-
-        if (allFailed) {
-            html += '<div class="tb-diag__hint">' +
-                '<b>Все проверки провалились.</b> Скорее всего:<br>' +
-                '• Устройство в другой сети / подсети<br>' +
-                '• Сервер не слушает внешний интерфейс (только localhost)<br>' +
-                '• Файрвол блокирует порт<br>' +
-                '• Android блокирует cleartext HTTP (см. ниже)' +
-                '</div>';
-        } else if (imgPingOk && jsFailed) {
-            html += '<div class="tb-diag__hint">' +
-                '<b>Сеть до сервера работает (картинка загрузилась), но JS-запросы блокируются.</b><br>' +
-                'Это классический <b>CORS</b> или <b>cleartext</b> запрет на Android.<br><br>' +
-                '<b>Что делать:</b><br>' +
-                '1. На сервере Transmission/TorrServer разрешить CORS:<br>' +
-                '&nbsp;&nbsp;<code>Access-Control-Allow-Origin: *</code><br>' +
-                '2. Для Android — в манифесте приложения Lampa должно быть:<br>' +
-                '&nbsp;&nbsp;<code>android:usesCleartextTraffic="true"</code><br>' +
-                '3. Если сервер на Android-смартфоне — проверьте, что он слушает 0.0.0.0, а не 127.0.0.1' +
-                '</div>';
-        } else if (report.protocol === 'HTTP') {
-            html += '<div class="tb-diag__hint">' +
-                '<b>Используется HTTP (не HTTPS).</b> На Android это часто блокируется.<br>' +
-                'Если сервер сам поднимает HTTPS — используйте его.<br>' +
-                'Иначе — добавьте <code>android:usesCleartextTraffic="true"</code> в манифест Lampa.' +
-                '</div>';
-        }
-
-        html += '</div>';
-        return html;
-    }
-
-    /**
-     * Запускает полную диагностику обоих серверов
-     */
     function runDiagnostics() {
         showLoader();
 
         var tsUrl = getTorrServerUrl();
         var trConfig = getTransmissionConfig();
-        var trUrl = trConfig.url + trConfig.path;
 
         var trHeaders = { 'Content-Type': 'application/json' };
         if (trConfig.user || trConfig.pass) {
@@ -860,21 +687,76 @@
         ]).then(function (reports) {
             hideLoader();
 
-            var html = '<div class="tb-diag">';
-            reports.forEach(function (r) {
-                html += buildReportHtml(r);
-            });
-            html += '</div>';
+            var lines = [];
 
-            Lampa.Modal.open({
+            reports.forEach(function (report) {
+                lines.push('━━━ ' + report.name + ' ━━━');
+                lines.push('Адрес: ' + report.testUrl);
+                lines.push('Хост: ' + report.host);
+                lines.push('Протокол: ' + report.protocol);
+
+                report.tests.forEach(function (t) {
+                    var r = t.result;
+                    var line = (r.ok ? '✅' : '❌') + ' ' + t.label + ': ';
+
+                    if (r.ok) {
+                        line += 'OK (' + r.time + 'ms)';
+                        if (r.status) line += ', HTTP ' + r.status;
+                    } else {
+                        if (r.message) line += r.message;
+                        if (r.status) line += ' [HTTP ' + r.status + (r.statusText ? ' ' + r.statusText : '') + ']';
+                        if (r.time) line += ' (' + r.time + 'ms)';
+                    }
+
+                    lines.push(line);
+                });
+
+                var allFailed = report.tests.every(function (t) { return !t.result.ok; });
+                var imgPingOk = report.tests[0] && report.tests[0].result.ok;
+                var jsTests = report.tests.slice(1);
+                var jsFailed = jsTests.length > 0 && jsTests.every(function (t) { return !t.result.ok; });
+
+                if (allFailed) {
+                    lines.push('⚠ Все проверки провалились.');
+                    lines.push('→ Устройство в другой сети, либо сервер не слушает внешний интерфейс (только 127.0.0.1), либо файрвол блокирует порт.');
+                } else if (imgPingOk && jsFailed) {
+                    lines.push('⚠ Сеть до сервера есть, но JS-запросы блокируются.');
+                    lines.push('→ Вероятная причина: CORS или cleartext-блокировка Android.');
+                    lines.push('→ Разрешите CORS на сервере (Access-Control-Allow-Origin: *).');
+                    lines.push('→ Или добавьте usesCleartextTraffic="true" в манифест Lampa.');
+                } else if (report.protocol === 'HTTP') {
+                    lines.push('⚠ Используется HTTP. Android может блокировать cleartext.');
+                } else {
+                    lines.push('✅ Сервер доступен.');
+                }
+
+                lines.push(' ');
+            });
+
+            Lampa.Select.show({
                 title: '🔍 Диагностика подключений',
-                html: html,
-                size: 'large',
+                items: lines.map(function (line) {
+                    return { title: line || ' ' };
+                }),
                 onBack: function () {
-                    Lampa.Modal.close();
                     Lampa.Controller.toggle('settings');
                 }
             });
+
+            // Полный отчёт в консоль
+            console.log('%c[TorrentBridge] === ДИАГНОСТИКА ===', 'color: #4ade80; font-weight: bold');
+            reports.forEach(function (report) {
+                console.group(report.name + ' (' + report.testUrl + ')');
+                console.log('Хост:', report.host);
+                console.log('Протокол:', report.protocol);
+                report.tests.forEach(function (t) {
+                    var r = t.result;
+                    var prefix = r.ok ? '✅' : '❌';
+                    console.log(prefix + ' ' + t.label + ':', r);
+                });
+                console.groupEnd();
+            });
+
         }).catch(function (e) {
             hideLoader();
             error('Diagnostics error:', e);
@@ -1424,7 +1306,6 @@
             onChange: function () { testConnections(); }
         });
 
-        // НОВЫЙ ПУНКТ — ДИАГНОСТИКА
         Lampa.SettingsApi.addParam({
             component: MANIFEST.component,
             param: {
@@ -1434,7 +1315,7 @@
             },
             field: {
                 name: '🔍 Диагностика подключения',
-                description: 'Подробный отчёт: причины недоступности серверов, CORS, cleartext'
+                description: 'Подробный отчёт: причины недоступности, CORS, cleartext'
             },
             onChange: function () { runDiagnostics(); }
         });
@@ -1447,8 +1328,8 @@
                 default: ''
             },
             field: {
-                name: 'Версия 6.3.2',
-                description: 'С диагностикой подключений.'
+                name: 'Версия 6.3.3',
+                description: 'С диагностикой через Lampa.Select.'
             }
         });
     }
@@ -1456,7 +1337,7 @@
     // ==================== ИНИЦИАЛИЗАЦИЯ ====================
 
     function init() {
-        log('Init TorrentBridge v6.3.2');
+        log('Init TorrentBridge v6.3.3');
 
         if (!$('#torrentbridge-styles').length) {
             $('head').append(STYLES);
@@ -1488,7 +1369,7 @@
             }
         });
 
-        log('TorrentBridge v6.3.2 initialized');
+        log('TorrentBridge v6.3.3 initialized');
     }
 
     if (!window.plugin_torrentbridge_v6_ready) {
