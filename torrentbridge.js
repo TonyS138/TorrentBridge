@@ -925,4 +925,117 @@
             }
         });
 
-        Lampa.S
+        Lampa.SettingsApi.addParam({
+            component: MANIFEST.component,
+            param: {
+                name: CONFIG_PREFIX + '_path_Movies',
+                type: 'input',
+                default: '',
+                values: Lampa.Storage.get(CONFIG_PREFIX + '_path_Movies', '')
+            },
+            field: {
+                name: 'Путь для фильмов',
+                description: 'Путь на сервере Transmission для фильмов (опционально)'
+            },
+            onChange: function (v) {
+                Lampa.Storage.set(CONFIG_PREFIX + '_path_Movies', String(v || '').trim());
+                Lampa.Settings.update();
+            }
+        });
+
+        Lampa.SettingsApi.addParam({
+            component: MANIFEST.component,
+            param: {
+                name: CONFIG_PREFIX + '_path_TV',
+                type: 'input',
+                default: '',
+                values: Lampa.Storage.get(CONFIG_PREFIX + '_path_TV', '')
+            },
+            field: {
+                name: 'Путь для сериалов',
+                description: 'Путь на сервере Transmission для сериалов (опционально)'
+            },
+            onChange: function (v) {
+                Lampa.Storage.set(CONFIG_PREFIX + '_path_TV', String(v || '').trim());
+                Lampa.Settings.update();
+            }
+        });
+
+        Lampa.SettingsApi.addParam({
+            component: MANIFEST.component,
+            param: {
+                name: CONFIG_PREFIX + '_test',
+                type: 'button',
+                default: false
+            },
+            field: { name: '🔌 Проверить подключения' },
+            onChange: function () { testConnections(); }
+        });
+
+        Lampa.SettingsApi.addParam({
+            component: MANIFEST.component,
+            param: {
+                name: CONFIG_PREFIX + '_info',
+                type: 'static',
+                default: ''
+            },
+            field: {
+                name: 'Версия 6.7.0',
+                description: 'Кнопка в стиле Lampa, всегда развёрнута.'
+            }
+        });
+    }
+
+    // ==================== ИНИЦИАЛИЗАЦИЯ ====================
+
+    function init() {
+        log('Init TorrentBridge v6.7.0');
+
+        if (!$('#torrentbridge-styles').length) {
+            $('head').append(STYLES);
+        }
+
+        createSettings();
+        Lampa.Manifest.plugins = MANIFEST;
+
+        hookTorrentMenu();
+
+        Lampa.Listener.follow('full', function (e) {
+            if (e.type === 'complite') {
+                setTimeout(function () {
+                    try {
+                        var render = e.object.activity.render();
+                        var movie = render.model || e.object.movie || e.object;
+
+                        if (movie && movie.id) {
+                            if (isEnabled()) {
+                                addMainButtons(movie);
+                            } else {
+                                currentMovie = movie;
+                            }
+                        }
+                    } catch (err) {
+                        error('Error in full handler:', err);
+                    }
+                }, 1000);
+            }
+        });
+
+        log('TorrentBridge v6.7.0 initialized');
+    }
+
+    if (!window.plugin_torrentbridge_v6_ready) {
+        window.plugin_torrentbridge_v6_ready = true;
+
+        if (window.appready) {
+            init();
+        } else {
+            Lampa.Listener.follow('app', function (e) {
+                if (e.type === 'ready') {
+                    setTimeout(init, 500);
+                }
+            });
+        }
+    }
+
+})();
