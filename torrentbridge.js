@@ -1,6 +1,6 @@
 /**
- * Torrent Bridge - v6.6.0
- * Кнопка всегда в полном виде, обводка через conic-gradient (не ломается при перерисовке Lampa)
+ * Torrent Bridge - v6.7.0
+ * Кнопка в общем стиле Lampa, всегда развёрнута, обводка прогресса по периметру
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '6.6.0',
+        version: '6.7.0',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         component: 'torrentbridge',
@@ -23,76 +23,61 @@
 
     const STYLES = `
         <style id="torrentbridge-styles">
-            /* Кнопка — всегда в полном виде, обводка через conic-gradient */
-            .full-start__button.button--torrent_bridge,
-            .full-start__button.button--torrent_bridge.focus,
-            .full-start__button.button--torrent_bridge:hover {
+            /* === Кнопка в стиле Lampa === */
+            .full-start__button.button--torrent_bridge {
                 position: relative;
                 display: inline-flex !important;
                 align-items: center;
-                justify-content: flex-start;
-                gap: 0;
-                min-width: auto !important;
-                padding: 2px !important; /* отступ для обводки */
-                border-radius: 8px;
-                background: transparent !important;
+                justify-content: center;
+                flex: 0 0 auto;
+                width: auto !important;
+                min-width: 0 !important;
+                max-width: none !important;
+                height: auto !important;
+                padding: 0.75em 1.2em !important;
+                margin: 0 !important;
+                border-radius: 6px !important;
+                background: rgba(255, 255, 255, 0.08) !important;
                 background-image: none !important;
+                color: inherit !important;
                 box-shadow: none !important;
                 transform: none !important;
-                transition: none !important;
+                transition: background 0.2s ease !important;
                 overflow: visible !important;
-                color: inherit !important;
-                line-height: 1;
-                /* Переменная прогресса 0..100 задаётся из JS */
+                white-space: nowrap !important;
+                /* Переменные прогресса */
                 --tb-progress: 0;
                 --tb-color: #4ade80;
             }
 
-            /* Внутренний слой — фон самой кнопки (накладывается поверх conic-gradient) */
-            .button--torrent_bridge .tb-inner {
+            /* Убираем ЛЮБЫЕ изменения размера при focus/hover */
+            .full-start__button.button--torrent_bridge.focus,
+            .full-start__button.button--torrent_bridge:hover,
+            .full-start__button.button--torrent_bridge.selector.focus,
+            .full-start__button.button--torrent_bridge.selector:hover {
+                background: rgba(255, 255, 255, 0.14) !important;
+                color: inherit !important;
+                transform: none !important;
+                box-shadow: none !important;
+                width: auto !important;
+                min-width: 0 !important;
+                padding: 0.75em 1.2em !important;
+            }
+
+            /* Принудительно показываем содержимое — Lampa не должна его скрывать */
+            .full-start__button.button--torrent_bridge > * {
+                display: inline-flex !important;
+                opacity: 1 !important;
+                visibility: visible !important;
+            }
+
+            .button--torrent_bridge .tb-content {
                 position: relative;
                 z-index: 1;
                 display: inline-flex;
                 align-items: center;
                 gap: 8px;
-                padding: 0.6em 1.1em;
-                border-radius: 6px;
-                background: rgba(255, 255, 255, 0.08);
-                transition: background 0.25s ease;
-                width: 100%;
-                box-sizing: border-box;
             }
-
-            .button--torrent_bridge.focus .tb-inner,
-            .button--torrent_bridge:hover .tb-inner {
-                background: rgba(255, 255, 255, 0.16);
-            }
-
-            /* Слой обводки — conic-gradient по периметру */
-            .button--torrent_bridge .tb-progress-ring {
-                position: absolute;
-                inset: 0;
-                border-radius: 8px;
-                z-index: 0;
-                pointer-events: none;
-                /* Заливка прогресса: conic-gradient заполняет круг по часовой стрелке */
-                background: conic-gradient(
-                    var(--tb-color) calc(var(--tb-progress) * 1%),
-                    rgba(255, 255, 255, 0.12) 0
-                );
-                /* Плавное изменение при обновлении */
-                transition: none;
-            }
-
-            /* Если прогресс = 0 — показываем просто серую рамку */
-            .button--torrent_bridge[data-progress="0"] .tb-progress-ring {
-                background: rgba(255, 255, 255, 0.12);
-            }
-
-            /* Цвет прогресса */
-            .button--torrent_bridge.is-low  { --tb-color: #f87171; }
-            .button--torrent_bridge.is-mid  { --tb-color: #fbbf24; }
-            .button--torrent_bridge.is-high { --tb-color: #4ade80; }
 
             .button--torrent_bridge .tb-icon {
                 width: 18px;
@@ -114,25 +99,35 @@
 
             .button--torrent_bridge .tb-percent {
                 font-size: 0.85em;
-                opacity: 0.75;
+                opacity: 0.8;
                 font-variant-numeric: tabular-nums;
-                transition: color 0.3s ease, opacity 0.3s ease;
             }
 
-            .button--torrent_bridge .tb-percent.is-downloading {
-                opacity: 1;
-                color: #fbbf24;
+            /* Тонкая обводка прогресса — ВСЕГДА видна */
+            .button--torrent_bridge::after {
+                content: '';
+                position: absolute;
+                inset: 0;
+                border-radius: 6px;
+                pointer-events: none;
+                z-index: 2;
+                padding: 2px;
+                background:
+                    conic-gradient(
+                        var(--tb-color) calc(var(--tb-progress) * 1%),
+                        rgba(255, 255, 255, 0.12) 0
+                    );
+                -webkit-mask:
+                    linear-gradient(#000 0 0) content-box,
+                    linear-gradient(#000 0 0);
+                -webkit-mask-composite: xor;
+                        mask-composite: exclude;
+                transition: none;
             }
 
-            .button--torrent_bridge .tb-percent.is-seeding {
-                opacity: 1;
-                color: #4ade80;
-            }
-
-            .button--torrent_bridge .tb-percent.is-paused {
-                opacity: 0.7;
-                color: #94a3b8;
-            }
+            .button--torrent_bridge.is-low  { --tb-color: #f87171; }
+            .button--torrent_bridge.is-mid  { --tb-color: #fbbf24; }
+            .button--torrent_bridge.is-high { --tb-color: #4ade80; }
 
             /* Пульсация только иконки во время загрузки */
             .button--torrent_bridge.is-active .tb-icon {
@@ -141,7 +136,7 @@
 
             @keyframes tb-icon-pulse {
                 0%, 100% { transform: scale(1); opacity: 1; }
-                50%      { transform: scale(1.15); opacity: 0.85; }
+                50%      { transform: scale(1.12); opacity: 0.85; }
             }
         </style>
     `;
@@ -670,9 +665,8 @@
 
     function buildBridgeButton() {
         return $(
-            '<div class="full-start__button selector button--torrent_bridge" data-progress="0">' +
-                '<div class="tb-progress-ring"></div>' +
-                '<div class="tb-inner">' +
+            '<div class="full-start__button selector button--torrent_bridge">' +
+                '<span class="tb-content">' +
                     '<svg class="tb-icon" viewBox="0 0 24 24">' +
                         '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>' +
                     '</svg>' +
@@ -680,7 +674,7 @@
                         '<span class="tb-title">TorrentBridge</span>' +
                         '<span class="tb-percent"></span>' +
                     '</span>' +
-                '</div>' +
+                '</span>' +
             '</div>'
         );
     }
@@ -693,7 +687,6 @@
 
         if (!torrent) {
             $btn.removeClass('is-active is-low is-mid is-high');
-            $btn.attr('data-progress', 0);
             $btn.css('--tb-progress', 0);
             $percent.text('').removeClass('is-downloading is-seeding is-paused');
             $title.text('TorrentBridge');
@@ -705,7 +698,6 @@
         var cls = progressClass(percent);
 
         $percent.text(percent + '%').removeClass('is-downloading is-seeding is-paused');
-        $btn.attr('data-progress', percent);
         $btn.css('--tb-progress', percent);
 
         var isDownloading = stateLower.indexOf('download') !== -1 || stateLower.indexOf('check') !== -1 || stateLower.indexOf('verif') !== -1;
@@ -933,117 +925,4 @@
             }
         });
 
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_path_Movies',
-                type: 'input',
-                default: '',
-                values: Lampa.Storage.get(CONFIG_PREFIX + '_path_Movies', '')
-            },
-            field: {
-                name: 'Путь для фильмов',
-                description: 'Путь на сервере Transmission для фильмов (опционально)'
-            },
-            onChange: function (v) {
-                Lampa.Storage.set(CONFIG_PREFIX + '_path_Movies', String(v || '').trim());
-                Lampa.Settings.update();
-            }
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_path_TV',
-                type: 'input',
-                default: '',
-                values: Lampa.Storage.get(CONFIG_PREFIX + '_path_TV', '')
-            },
-            field: {
-                name: 'Путь для сериалов',
-                description: 'Путь на сервере Transmission для сериалов (опционально)'
-            },
-            onChange: function (v) {
-                Lampa.Storage.set(CONFIG_PREFIX + '_path_TV', String(v || '').trim());
-                Lampa.Settings.update();
-            }
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_test',
-                type: 'button',
-                default: false
-            },
-            field: { name: '🔌 Проверить подключения' },
-            onChange: function () { testConnections(); }
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_info',
-                type: 'static',
-                default: ''
-            },
-            field: {
-                name: 'Версия 6.6.0',
-                description: 'Кнопка всегда в полном виде, обводка через conic-gradient.'
-            }
-        });
-    }
-
-    // ==================== ИНИЦИАЛИЗАЦИЯ ====================
-
-    function init() {
-        log('Init TorrentBridge v6.6.0');
-
-        if (!$('#torrentbridge-styles').length) {
-            $('head').append(STYLES);
-        }
-
-        createSettings();
-        Lampa.Manifest.plugins = MANIFEST;
-
-        hookTorrentMenu();
-
-        Lampa.Listener.follow('full', function (e) {
-            if (e.type === 'complite') {
-                setTimeout(function () {
-                    try {
-                        var render = e.object.activity.render();
-                        var movie = render.model || e.object.movie || e.object;
-
-                        if (movie && movie.id) {
-                            if (isEnabled()) {
-                                addMainButtons(movie);
-                            } else {
-                                currentMovie = movie;
-                            }
-                        }
-                    } catch (err) {
-                        error('Error in full handler:', err);
-                    }
-                }, 1000);
-            }
-        });
-
-        log('TorrentBridge v6.6.0 initialized');
-    }
-
-    if (!window.plugin_torrentbridge_v6_ready) {
-        window.plugin_torrentbridge_v6_ready = true;
-
-        if (window.appready) {
-            init();
-        } else {
-            Lampa.Listener.follow('app', function (e) {
-                if (e.type === 'ready') {
-                    setTimeout(init, 500);
-                }
-            });
-        }
-    }
-
-})();
+        Lampa.S
