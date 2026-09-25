@@ -1,6 +1,6 @@
 /**
- * Torrent Bridge - v6.3.0
- * Анимированная кнопка с индикацией загрузки торрента
+ * Torrent Bridge - v6.4.0
+ * Анимированная кнопка: контур загрузки по всему периметру кнопки
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '6.3.0',
+        version: '6.4.0',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         component: 'torrentbridge',
@@ -26,60 +26,71 @@
             .button--torrent_bridge {
                 position: relative;
                 overflow: visible !important;
+                padding: 0.6em 1.1em !important;
             }
 
-            .button--torrent_bridge .tb-icon-wrap {
-                position: relative;
-                width: 32px;
-                height: 32px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                flex-shrink: 0;
-            }
-
-            .button--torrent_bridge .tb-ring {
+            /* SVG-обводка по периметру всей кнопки */
+            .button--torrent_bridge .tb-outline {
                 position: absolute;
                 top: 0;
                 left: 0;
-                width: 32px;
-                height: 32px;
-                transform: rotate(-90deg);
+                width: 100%;
+                height: 100%;
                 pointer-events: none;
+                overflow: visible;
+                z-index: 0;
             }
 
-            .button--torrent_bridge .tb-ring circle {
+            .button--torrent_bridge .tb-outline rect {
                 fill: none;
                 stroke-width: 2.5;
-                stroke-linecap: round;
+                rx: 6;
+                ry: 6;
+                transition: stroke 0.3s ease;
             }
 
-            .button--torrent_bridge .tb-ring .tb-ring-bg {
-                stroke: rgba(255,255,255,0.15);
+            .button--torrent_bridge .tb-outline-bg {
+                stroke: rgba(255,255,255,0.10);
             }
 
-            .button--torrent_bridge .tb-ring .tb-ring-fill {
+            .button--torrent_bridge .tb-outline-fill {
                 stroke: #4ade80;
-                stroke-dasharray: 88;
-                stroke-dashoffset: 88;
+                stroke-linecap: round;
+                stroke-dasharray: 100;
+                stroke-dashoffset: 100;
                 transition: stroke-dashoffset 0.6s ease, stroke 0.3s ease;
+                filter: drop-shadow(0 0 3px rgba(74, 222, 128, 0.5));
             }
 
-            .button--torrent_bridge .tb-ring-fill.is-low    { stroke: #f87171; }
-            .button--torrent_bridge .tb-ring-fill.is-mid    { stroke: #fbbf24; }
-            .button--torrent_bridge .tb-ring-fill.is-high   { stroke: #4ade80; }
+            .button--torrent_bridge .tb-outline-fill.is-low  { stroke: #f87171; filter: drop-shadow(0 0 3px rgba(248,113,113,0.5)); }
+            .button--torrent_bridge .tb-outline-fill.is-mid  { stroke: #fbbf24; filter: drop-shadow(0 0 3px rgba(251,191,36,0.5)); }
+            .button--torrent_bridge .tb-outline-fill.is-high { stroke: #4ade80; filter: drop-shadow(0 0 3px rgba(74,222,128,0.5)); }
+
+            /* Контент кнопки — поверх обводки */
+            .button--torrent_bridge .tb-content {
+                position: relative;
+                z-index: 1;
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+            }
 
             .button--torrent_bridge .tb-icon {
                 width: 18px;
                 height: 18px;
                 fill: currentColor;
-                z-index: 1;
+                flex-shrink: 0;
             }
 
             .button--torrent_bridge .tb-label {
                 display: inline-flex;
                 align-items: baseline;
                 gap: 6px;
+                white-space: nowrap;
+            }
+
+            .button--torrent_bridge .tb-title {
+                font-weight: 500;
             }
 
             .button--torrent_bridge .tb-percent {
@@ -104,38 +115,25 @@
                 color: #94a3b8;
             }
 
-            .button--torrent_bridge.is-active .tb-icon-wrap {
-                animation: tb-pulse 2s ease-in-out infinite;
+            /* Пульсация иконки во время активной загрузки */
+            .button--torrent_bridge.is-active .tb-icon {
+                animation: tb-icon-pulse 1.8s ease-in-out infinite;
             }
 
-            @keyframes tb-pulse {
-                0%, 100% { transform: scale(1); }
-                50%      { transform: scale(1.08); }
+            @keyframes tb-icon-pulse {
+                0%, 100% { transform: scale(1); opacity: 1; }
+                50%      { transform: scale(1.15); opacity: 0.85; }
             }
 
-            .button--torrent_bridge .tb-progress-bar {
-                position: absolute;
-                left: 8%;
-                right: 8%;
-                bottom: 3px;
-                height: 2px;
-                background: rgba(255,255,255,0.12);
-                border-radius: 2px;
-                overflow: hidden;
-                pointer-events: none;
+            /* Дополнительное свечение вокруг кнопки при загрузке */
+            .button--torrent_bridge.is-active {
+                animation: tb-btn-glow 2.4s ease-in-out infinite;
             }
 
-            .button--torrent_bridge .tb-progress-bar-fill {
-                height: 100%;
-                width: 0%;
-                background: #4ade80;
-                border-radius: 2px;
-                transition: width 0.6s ease, background 0.3s ease;
+            @keyframes tb-btn-glow {
+                0%, 100% { box-shadow: 0 0 0 0 rgba(74,222,128,0); }
+                50%      { box-shadow: 0 0 12px 0 rgba(251,191,36,0.25); }
             }
-
-            .button--torrent_bridge .tb-progress-bar-fill.is-low  { background: #f87171; }
-            .button--torrent_bridge .tb-progress-bar-fill.is-mid  { background: #fbbf24; }
-            .button--torrent_bridge .tb-progress-bar-fill.is-high { background: #4ade80; }
         </style>
     `;
 
@@ -437,17 +435,6 @@
         return 'is-low';
     }
 
-    function standardStateName(state) {
-        var s = String(state || '').toLowerCase().trim();
-        if (/^(downloading|metadl|forceddl|stalleddl)/.test(s)) return 'Загрузка';
-        if (/^(uploading|forcedup|stalledup|seeding)/.test(s)) return 'Раздача';
-        if (/^finished$/.test(s)) return 'Завершено';
-        if (/^(pauseddl|pausedup|stoppeddl|stoppedup|stopped|paused)/.test(s)) return 'Пауза';
-        if (/^(checking|queued|verifying)/.test(s)) return 'Проверка';
-        if (/^(error|missingfiles)/.test(s)) return 'Ошибка';
-        return state || '';
-    }
-
     // ==================== ДОБАВЛЕНИЕ В TRANSMISSION ====================
 
     function addTorrentToTransmission(torrentElement, movie) {
@@ -516,7 +503,6 @@
             var found = torrents.find(function (t) {
                 return t.labels.indexOf(label) !== -1;
             });
-
             if (found) return found;
 
             if (titleClean) {
@@ -526,7 +512,6 @@
                 });
                 if (found) return found;
             }
-
             return null;
         }).catch(function (e) {
             error('findTorrentForMovie error:', e);
@@ -581,7 +566,7 @@
         return findTorrentForMovie(movie).then(function (torrent) {
             if (!torrent) {
                 hideLoader();
-                Lampa.Bell.push({ text: 'Торрент не найден. Добавьте его через контекстное меню торрента.' });
+                Lampa.Bell.push({ text: 'Торрент не найден. Добавьте его через контекстное меню.' });
                 return;
             }
 
@@ -674,49 +659,41 @@
 
     // ==================== UI: АНИМИРОВАННАЯ КНОПКА ====================
 
-    /**
-     * Создаёт HTML анимированной кнопки TorrentBridge.
-     */
     function buildBridgeButton() {
         return $(
             '<div class="full-start__button selector button--torrent_bridge">' +
-                '<div class="tb-icon-wrap">' +
-                    '<svg class="tb-ring" viewBox="0 0 32 32">' +
-                        '<circle class="tb-ring-bg" cx="16" cy="16" r="14"></circle>' +
-                        '<circle class="tb-ring-fill" cx="16" cy="16" r="14"></circle>' +
-                    '</svg>' +
+                /* SVG-обводка по периметру всей кнопки.
+                   Используем pathLength="100" — тогда stroke-dasharray="100",
+                   а stroke-dashoffset управляется в процентах 0..100. */
+                '<svg class="tb-outline" preserveAspectRatio="none">' +
+                    '<rect class="tb-outline-bg" x="1.25" y="1.25" width="calc(100% - 2.5px)" height="calc(100% - 2.5px)" pathLength="100"></rect>' +
+                    '<rect class="tb-outline-fill" x="1.25" y="1.25" width="calc(100% - 2.5px)" height="calc(100% - 2.5px)" pathLength="100"></rect>' +
+                '</svg>' +
+                '<span class="tb-content">' +
                     '<svg class="tb-icon" viewBox="0 0 24 24">' +
                         '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>' +
                     '</svg>' +
-                '</div>' +
-                '<span class="tb-label">' +
-                    '<span class="tb-title">TorrentBridge</span>' +
-                    '<span class="tb-percent">0%</span>' +
+                    '<span class="tb-label">' +
+                        '<span class="tb-title">TorrentBridge</span>' +
+                        '<span class="tb-percent"></span>' +
+                    '</span>' +
                 '</span>' +
-                '<div class="tb-progress-bar">' +
-                    '<div class="tb-progress-bar-fill"></div>' +
-                '</div>' +
             '</div>'
         );
     }
 
-    /**
-     * Обновляет визуальное состояние кнопки по данным торрента.
-     */
     function updateButtonVisual($btn, torrent) {
         if (!$btn || !$btn.length) return;
 
-        var $ring = $btn.find('.tb-ring-fill');
+        var $outline = $btn.find('.tb-outline-fill');
         var $percent = $btn.find('.tb-percent');
-        var $barFill = $btn.find('.tb-progress-bar-fill');
+        var $title = $btn.find('.tb-title');
 
         if (!torrent) {
-            // Нет торрента — обычная кнопка
             $btn.removeClass('is-active');
             $percent.text('').removeClass('is-downloading is-seeding is-paused');
-            $ring.css('stroke-dashoffset', 88).removeClass('is-low is-mid is-high');
-            $barFill.css('width', '0%').removeClass('is-low is-mid is-high');
-            $btn.find('.tb-title').text('TorrentBridge');
+            $outline.css('stroke-dashoffset', 100).removeClass('is-low is-mid is-high');
+            $title.text('TorrentBridge');
             return;
         }
 
@@ -724,7 +701,6 @@
         var stateLower = String(torrent.state || '').toLowerCase();
         var cls = progressClass(percent);
 
-        // Процент рядом с названием
         $percent.text(percent + '%').removeClass('is-downloading is-seeding is-paused');
 
         var isDownloading = stateLower.indexOf('download') !== -1 || stateLower.indexOf('check') !== -1 || stateLower.indexOf('verif') !== -1;
@@ -733,40 +709,30 @@
 
         if (isSeeding || percent >= 100) {
             $percent.addClass('is-seeding');
-            $btn.find('.tb-title').text('TorrentBridge — готово');
+            $title.text('TorrentBridge');
             $btn.removeClass('is-active');
         } else if (isDownloading) {
             $percent.addClass('is-downloading');
-            $btn.find('.tb-title').text('TorrentBridge');
+            $title.text('TorrentBridge');
             $btn.addClass('is-active');
         } else if (isPaused) {
             $percent.addClass('is-paused');
-            $btn.find('.tb-title').text('TorrentBridge — пауза');
+            $title.text('TorrentBridge');
             $btn.removeClass('is-active');
         } else {
-            $btn.find('.tb-title').text('TorrentBridge');
+            $title.text('TorrentBridge');
             $btn.removeClass('is-active');
         }
 
-        // Круговой индикатор вокруг иконки
-        // Длина окружности радиуса 14 = 2 * π * 14 ≈ 87.96
-        var circumference = 88;
-        var offset = circumference - (percent / 100) * circumference;
-        $ring
+        // pathLength="100" → 100 единиц по периметру.
+        // Чтобы линия шла по часовой стрелке и заполнялась — задаём offset.
+        var offset = 100 - percent;
+        $outline
             .removeClass('is-low is-mid is-high')
             .addClass(cls)
             .css('stroke-dashoffset', offset);
-
-        // Линейный прогресс-бар внизу кнопки
-        $barFill
-            .removeClass('is-low is-mid is-high')
-            .addClass(cls)
-            .css('width', percent + '%');
     }
 
-    /**
-     * Обновляет данные торрента из Transmission и перерисовывает кнопку.
-     */
     function refreshButtonStatus(movie, $btn) {
         if (!$btn || !$btn.length) return;
         findTorrentForMovie(movie).then(function (torrent) {
@@ -792,10 +758,8 @@
 
         container.append($btn);
 
-        // Первичное обновление
         refreshButtonStatus(movie, $btn);
 
-        // Периодическое обновление каждые 8 секунд
         if (statusCheckTimer) clearInterval(statusCheckTimer);
         statusCheckTimer = setInterval(function () {
             if ($btn.closest('body').length === 0) {
@@ -806,7 +770,7 @@
             refreshButtonStatus(movie, $btn);
         }, 8000);
 
-        log('Animated button added');
+        log('Animated button (perimeter outline) added');
     }
 
     // ==================== ТЕСТИРОВАНИЕ ====================
@@ -1025,8 +989,8 @@
                 default: ''
             },
             field: {
-                name: 'Версия 6.3.0',
-                description: 'Анимированная кнопка с индикацией загрузки.'
+                name: 'Версия 6.4.0',
+                description: 'Анимированная кнопка с контуром загрузки по всему периметру.'
             }
         });
     }
@@ -1034,9 +998,8 @@
     // ==================== ИНИЦИАЛИЗАЦИЯ ====================
 
     function init() {
-        log('Init TorrentBridge v6.3.0');
+        log('Init TorrentBridge v6.4.0');
 
-        // Вставляем стили один раз
         if (!$('#torrentbridge-styles').length) {
             $('head').append(STYLES);
         }
@@ -1067,7 +1030,7 @@
             }
         });
 
-        log('TorrentBridge v6.3.0 initialized');
+        log('TorrentBridge v6.4.0 initialized');
     }
 
     if (!window.plugin_torrentbridge_v6_ready) {
