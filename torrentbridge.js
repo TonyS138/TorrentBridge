@@ -1,8 +1,9 @@
 /**
- * Torrent Bridge - v6.1.0
+ * Torrent Bridge - v6.2.0
  * Автономный плагин: Transmission + TorrServer
- * + пункт "Скачать в Transmission" в контекстном меню торрентов
- * + кнопки в карточке фильма
+ * - Кнопка "Добавить в TorrentBridge" в контекстном меню торрентов
+ * - Кнопка "Смотреть в TorrentBridge" с прогрессом в карточке фильма
+ * - Убран пункт в меню "Смотреть" (дублировал кнопку)
  */
 
 (function () {
@@ -10,7 +11,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '6.1.0',
+        version: '6.2.0',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         component: 'torrentbridge',
@@ -19,7 +20,7 @@
 
     const CONFIG_PREFIX = 'torrentbridge';
     let currentMovie = null;
-    let originalSelectShow = null;
+    let statusCheckTimer = null;
 
     // ==================== ЛОГИРОВАНИЕ ====================
 
@@ -316,6 +317,29 @@
         return exts.indexOf(ext) !== -1;
     }
 
+    /**
+     * Возвращает CSS-класс для прогресс-бара в зависимости от процента.
+     */
+    function progressClass(percent) {
+        if (percent >= 100) return 'is-high';
+        if (percent >= 50) return 'is-mid';
+        return 'is-low';
+    }
+
+    /**
+     * Стандартизованное название состояния (как в TorrentManager)
+     */
+    function standardStateName(state) {
+        var s = String(state || '').toLowerCase().trim();
+        if (/^(downloading|metadl|forceddl|stalleddl)/.test(s)) return 'Загрузка';
+        if (/^(uploading|forcedup|stalledup|seeding)/.test(s)) return 'Раздача';
+        if (/^finished$/.test(s)) return 'Завершено';
+        if (/^(pauseddl|pausedup|stoppeddl|stoppedup|stopped|paused)/.test(s)) return 'Пауза';
+        if (/^(checking|queued|verifying)/.test(s)) return 'Проверка';
+        if (/^(error|missingfiles)/.test(s)) return 'Ошибка';
+        return state || '';
+    }
+
     // ==================== ДОБАВЛЕНИЕ В TRANSMISSION ====================
 
     function addTorrentToTransmission(torrentElement, movie) {
@@ -340,7 +364,7 @@
 
         transmissionSendTask(magnet, labels, downloadDir).then(function () {
             hideLoader();
-            Lampa.Bell.push({ text: '✅ Торрент добавлен в Transmission' });
+            Lampa.Bell.push({ text: '✅ Добавлено в TorrentBridge (Transmission)' });
         }).catch(function (e) {
             hideLoader();
             error('addTorrentToTransmission error:', e);
@@ -350,8 +374,6 @@
 
     /**
      * Перехват контекстного меню торрентов.
-     * Lampa генерирует событие 'torrent' с типом 'onlong' при долгом нажатии
-     * на торрент в списке. Мы добавляем в меню пункт "Скачать в Transmission".
      */
     function hookTorrentMenu() {
         Lampa.Listener.follow('torrent', function (e) {
@@ -371,7 +393,7 @@
             }
 
             e.menu.push({
-                title: 'TorrentBridge: скачать в Transmission',
+                title: 'Добавить в TorrentBridge',
                 onSelect: function () {
                     addTorrentToTransmission(torrentElement, activeMovie);
                 }
@@ -414,24 +436,7 @@
                 }
             }
 
-            if (torrents.length === 0) return null;
-
-            return new Promise(function (resolve) {
-                var items = torrents.map(function (t) {
-                    return {
-                        title: t.name,
-                        subtitle: Math.round(t.completed * 100) + '% · ' + t.state,
-                        torrent: t
-                    };
-                });
-
-                Lampa.Select.show({
-                    title: 'Выберите торрент из Transmission',
-                    items: items,
-                    onSelect: function (item) { resolve(item.torrent); },
-                    onBack: function () { resolve(null); }
-                });
-            });
+            return null;
         }).catch(function (e) {
             error('findTorrentForMovie error:', e);
             return null;
@@ -487,7 +492,7 @@
         return findTorrentForMovie(movie).then(function (torrent) {
             if (!torrent) {
                 hideLoader();
-                Lampa.Bell.push({ text: 'Торрент не найден. Сначала добавьте его в Transmission.' });
+                Lampa.Bell.push({ text: 'Торрент не найден. Добавьте его через контекстное меню торрента.' });
                 return;
             }
 
@@ -584,6 +589,34 @@
 
     // ==================== UI: КНОПКА В КАРТОЧКЕ ====================
 
+    /**
+     * Обновляет текст кнопки в зависимости от статуса торрента в Transmission.
+     * Возвращает заголовок вида "Смотреть в TorrentBridge" или "Раздача — 100%".
+     */
+    function updateWatchButtonLabel(movie, $btn) {
+        if (!$btn || !$btn.length) return;
+
+        findTorrentForMovie(movie).then(function (torrent) {
+            if (!torrent) {
+                $btn.find('span').text('Смотреть в TorrentBridge');
+                $btn.attr('data-status', 'no-torrent');
+                return;
+            }
+
+            var percent = Math.round((torrent.completed || 0) * 100);
+            var stateName = standardStateName(torrent.state);
+
+            if (percent >= 100 || torrent.state === 'Seeding') {
+                $btn.find('span').text(stateName + ' — ' + percent + '%');
+            } else {
+                $btn.find('span').text(stateName + ' — ' + percent + '%');
+            }
+            $btn.attr('data-status', torrent.state);
+        }).catch(function () {
+            $btn.find('span').text('Смотреть в TorrentBridge');
+        });
+    }
+
     function createMainButton(label, onClick) {
         return $(
             '<div class="full-start__button selector button--torrent_bridge">' +
@@ -603,84 +636,31 @@
 
         container.find('.button--torrent_bridge').remove();
 
-        var watchBtn = createMainButton('Смотреть с сервера', function () {
+        var $btn = createMainButton('Смотреть в TorrentBridge', function () {
             playFromTransmission(movie);
         });
 
-        container.append(watchBtn);
+        container.append($btn);
+
+        // Обновляем статус (прогресс загрузки)
+        updateWatchButtonLabel(movie, $btn);
+
+        // Обновляем каждые 10 секунд, пока открыта карточка
+        if (statusCheckTimer) clearInterval(statusCheckTimer);
+        statusCheckTimer = setInterval(function () {
+            if ($btn.closest('body').length === 0) {
+                clearInterval(statusCheckTimer);
+                statusCheckTimer = null;
+                return;
+            }
+            updateWatchButtonLabel(movie, $btn);
+        }, 10000);
+
         log('Main button added');
     }
 
-    // ==================== UI: ПУНКТ В МЕНЮ "СМОТРЕТЬ" ====================
-
-    function hookSelectShow() {
-        if (originalSelectShow) return;
-        originalSelectShow = Lampa.Select.show;
-
-        Lampa.Select.show = function (options) {
-            var items = options.items ? options.items.slice() : [];
-
-            var hasTorrent = items.some(function (i) {
-                var t = String(i.title || '').toLowerCase();
-                return t.indexOf('торрент') !== -1 || t.indexOf('torrent') !== -1;
-            });
-            var hasOnline = items.some(function (i) {
-                var t = String(i.title || '').toLowerCase();
-                return t.indexOf('онлайн') !== -1 || t.indexOf('online') !== -1;
-            });
-            var hasTrailer = items.some(function (i) {
-                var t = String(i.title || '').toLowerCase();
-                return t.indexOf('трейлер') !== -1 || t.indexOf('trailer') !== -1;
-            });
-
-            var isWatchMenu = (hasTorrent && hasOnline) || (hasOnline && hasTrailer);
-            var alreadyHas = items.some(function (i) { return i.action === 'torrentbridge_play'; });
-
-            if (isWatchMenu && isEnabled() && !alreadyHas) {
-                log('Watch menu detected, adding TorrentBridge');
-
-                var bridgeItem = {
-                    title: 'TorrentBridge',
-                    subtitle: 'Воспроизвести из Transmission',
-                    action: 'torrentbridge_play',
-                    template: 'selectbox_icon',
-                    separator: true,
-                    icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>',
-                    onSelect: function () {
-                        Lampa.Controller.toggle('content');
-                        setTimeout(function () {
-                            playFromTransmission(currentMovie);
-                        }, 100);
-                    }
-                };
-
-                var trailerIdx = -1;
-                for (var i = 0; i < items.length; i++) {
-                    var t = String(items[i].title || '').toLowerCase();
-                    if (t.indexOf('трейлер') !== -1 || t.indexOf('trailer') !== -1) {
-                        trailerIdx = i;
-                        break;
-                    }
-                }
-
-                if (trailerIdx !== -1) items.splice(trailerIdx, 0, bridgeItem);
-                else items.push(bridgeItem);
-
-                var originalOnSelect = options.onSelect;
-                options.onSelect = function (item) {
-                    if (item && item.action === 'torrentbridge_play') {
-                        if (typeof item.onSelect === 'function') item.onSelect();
-                        return;
-                    }
-                    if (typeof originalOnSelect === 'function') originalOnSelect(item);
-                };
-
-                options.items = items;
-            }
-
-            return originalSelectShow.call(this, options);
-        };
-    }
+    // ==================== UI: НЕ ДОБАВЛЯЕМ ПУНКТ В "СМОТРЕТЬ" ====================
+    // Пункт в меню "Смотреть" убран — он дублировал кнопку в карточке.
 
     // ==================== ТЕСТИРОВАНИЕ ====================
 
@@ -729,7 +709,7 @@
             },
             field: {
                 name: 'Активировать плагин',
-                description: 'Добавляет кнопки в карточку фильма, меню "Смотреть" и контекстное меню торрентов'
+                description: 'Добавляет кнопки в карточку фильма и контекстное меню торрентов'
             },
             onChange: function (v) {
                 var enabled = v === true || v === 'true';
@@ -898,7 +878,7 @@
                 default: ''
             },
             field: {
-                name: 'Версия 6.1.0',
+                name: 'Версия 6.2.0',
                 description: 'Автономный плагин. Не требует TorrentManager.'
             }
         });
@@ -907,12 +887,11 @@
     // ==================== ИНИЦИАЛИЗАЦИЯ ====================
 
     function init() {
-        log('Init TorrentBridge v6.1.0');
+        log('Init TorrentBridge v6.2.0');
 
         createSettings();
         Lampa.Manifest.plugins = MANIFEST;
 
-        hookSelectShow();
         hookTorrentMenu();
 
         Lampa.Listener.follow('full', function (e) {
@@ -936,7 +915,7 @@
             }
         });
 
-        log('TorrentBridge v6.1.0 initialized');
+        log('TorrentBridge v6.2.0 initialized');
     }
 
     if (!window.plugin_torrentbridge_v6_ready) {
