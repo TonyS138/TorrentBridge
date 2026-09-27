@@ -1,6 +1,6 @@
 /**
- * Torrent Bridge - v6.3.4
- * + Расширенная диагностика Basic Auth и обход через URL credentials
+ * Torrent Bridge - v6.4.0
+ * + Опция HTTPS-прокси для Transmission (обход блокировки WebView на Android)
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '6.3.4',
+        version: '6.4.0',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         component: 'torrentbridge',
@@ -16,6 +16,7 @@
     };
 
     const CONFIG_PREFIX = 'torrentbridge';
+    const LME_PROXY_URL = 'https://apx.lme.isroot.in/destination/';
     let currentMovie = null;
     let statusCheckTimer = null;
 
@@ -158,6 +159,10 @@
         return Lampa.Storage.get(CONFIG_PREFIX + '_enabled', false) === true;
     }
 
+    function useProxy() {
+        return Lampa.Storage.get(CONFIG_PREFIX + '_use_proxy', false) === true;
+    }
+
     function getTorrServerUrl() {
         var url = Lampa.Storage.get(CONFIG_PREFIX + '_torrserver_url', 'http://192.168.1.101:8090');
         url = String(url).trim().replace(/\/+$/, '');
@@ -182,6 +187,50 @@
         };
     }
 
+    /**
+     * Собирает финальный URL для запроса к Transmission.
+     * Если включён прокси — заворачивает URL в LME proxy с credentials в URL.
+     */
+    function buildTransmissionUrl(config, useProxyFlag) {
+        var baseUrl = config.url + config.path;
+
+        if (useProxyFlag) {
+            var hostPart = config.url.replace(/^https?:\/\//, '');
+            var schemePart = config.url.indexOf('https://') === 0 ? 'https://' : 'http://';
+            var creds = '';
+            if (config.user || config.pass) {
+                creds = encodeURIComponent(config.user) + ':' + encodeURIComponent(config.pass) + '@';
+            }
+            var innerUrl = schemePart + creds + hostPart + config.path;
+            return LME_PROXY_URL + innerUrl;
+        }
+
+        return baseUrl;
+    }
+
+    /**
+     * Заголовки для запроса.
+     * Если идём через прокси — НЕ отправляем Authorization (creds уже в URL).
+     * Если напрямую — отправляем Basic Auth.
+     */
+    function buildTransmissionHeaders(config, useProxyFlag) {
+        var headers = { 'Content-Type': 'application/json' };
+
+        if (useProxyFlag) {
+            // Креденшелы уже в URL, Authorization не нужен
+            headers['x-requested-with'] = 'lme-plugins';
+        } else if (config.user || config.pass) {
+            headers['Authorization'] = 'Basic ' + btoa(config.user + ':' + config.pass);
+        }
+
+        var sessionId = Lampa.Storage.get(CONFIG_PREFIX + '_transmission_key');
+        if (sessionId) {
+            headers['X-Transmission-Session-Id'] = sessionId;
+        }
+
+        return headers;
+    }
+
     // ==================== TRANSMISSION API ====================
 
     function transmissionRequest(data, retry) {
@@ -194,20 +243,12 @@
                 return;
             }
 
-            var url = config.url + config.path;
-            var headers = { 'Content-Type': 'application/json' };
-
-            if (config.user || config.pass) {
-                headers['Authorization'] = 'Basic ' + btoa(config.user + ':' + config.pass);
-            }
-
-            var sessionId = Lampa.Storage.get(CONFIG_PREFIX + '_transmission_key');
-            if (sessionId) {
-                headers['X-Transmission-Session-Id'] = sessionId;
-            }
+            var useProxyFlag = useProxy();
+            var url = buildTransmissionUrl(config, useProxyFlag);
+            var headers = buildTransmissionHeaders(config, useProxyFlag);
 
             var network = new Lampa.Reguest();
-            network.timeout(10000);
+            network.timeout(15000);
 
             network.quiet(
                 url,
@@ -224,6 +265,7 @@
                             ? err.getResponseHeader('X-Transmission-Session-Id')
                             : null;
                         if (newSessionId) {
+                            log('Got new Transmission session ID');
                             Lampa.Storage.set(CONFIG_PREFIX + '_transmission_key', newSessionId);
                             transmissionRequest(data, false).then(resolve).catch(reject);
                             return;
@@ -413,11 +455,6 @@
         }
     }
 
-    /**
-     * Универсальный XHR-тест с отдачей всех деталей.
-     * Если options.includeAuthHeaders = true, отправляет заголовок Authorization.
-     * Если options.urlCredentials задан — вставляет user:pass в URL.
-     */
     function diagRawXHR(url, options) {
         options = options || {};
         var t0 = Date.now();
@@ -450,26 +487,18 @@
             try {
                 if (options.headers) {
                     Object.keys(options.headers).forEach(function (k) {
-                        try {
-                            xhr.setRequestHeader(k, options.headers[k]);
-                        } catch (e) {
-                            log('setRequestHeader failed for', k, e);
-                        }
+                        try { xhr.setRequestHeader(k, options.headers[k]); }
+                        catch (e) {}
                     });
                 }
-            } catch (e) {
-                log('setRequestHeader loop failed:', e);
-            }
+            } catch (e) {}
 
-            // Пробуем узнать, реально ли ушёл Authorization
             var sentAuthHeader = '(неизвестно)';
             try {
                 if (xhr.getRequestHeader) {
                     sentAuthHeader = xhr.getRequestHeader('Authorization') || '(не отправлен)';
                 }
-            } catch (e) {
-                sentAuthHeader = 'ошибка чтения: ' + (e.message || String(e));
-            }
+            } catch (e) {}
 
             xhr.onload = function () {
                 clearTimeout(timer);
@@ -505,22 +534,14 @@
 
             xhr.ontimeout = function () {
                 clearTimeout(timer);
-                resolve({
-                    ok: false,
-                    time: Date.now() - t0,
-                    message: 'ontimeout'
-                });
+                resolve({ ok: false, time: Date.now() - t0, message: 'ontimeout' });
             };
 
             try {
                 xhr.send(options.body || null);
             } catch (e) {
                 clearTimeout(timer);
-                resolve({
-                    ok: false,
-                    time: Date.now() - t0,
-                    message: 'send() error: ' + (e.message || String(e))
-                });
+                resolve({ ok: false, time: Date.now() - t0, message: 'send() error: ' + (e.message || String(e)) });
             }
         });
     }
@@ -532,11 +553,7 @@
             var timer = setTimeout(function () {
                 img.onload = img.onerror = null;
                 img.src = '';
-                resolve({
-                    ok: false,
-                    time: Date.now() - t0,
-                    message: 'timeout'
-                });
+                resolve({ ok: false, time: Date.now() - t0, message: 'timeout' });
             }, 5000);
 
             img.onload = function () {
@@ -554,14 +571,6 @@
         });
     }
 
-    /**
-     * Полная диагностика Transmission с 5 тестами:
-     *  1. Image ping — сеть
-     *  2. XHR без авторизации — видим 401
-     *  3. XHR с Basic Auth в заголовке — проверяем, уходит ли заголовок
-     *  4. XHR с user:pass в URL — обходной путь для WebView
-     *  5. Lampa.Reguest — как в основном коде
-     */
     function diagnoseTransmission() {
         var config = getTransmissionConfig();
         var fullUrl = config.url + config.path;
@@ -571,55 +580,54 @@
             host: extractHostPort(config.url),
             protocol: config.url.indexOf('https://') === 0 ? 'HTTPS' : 'HTTP',
             hasCredentials: Boolean(config.user || config.pass),
+            proxyEnabled: useProxy(),
             tests: []
         };
 
-        var authHeader = null;
-        if (config.user || config.pass) {
-            authHeader = 'Basic ' + btoa(config.user + ':' + config.pass);
-        }
-
-        var headersWithAuth = { 'Content-Type': 'application/json' };
-        if (authHeader) headersWithAuth['Authorization'] = authHeader;
-        var sessionId = Lampa.Storage.get(CONFIG_PREFIX + '_transmission_key');
-        if (sessionId) headersWithAuth['X-Transmission-Session-Id'] = sessionId;
-
-        var headersWithoutAuth = { 'Content-Type': 'application/json' };
-
         var body = JSON.stringify({ method: 'session-get' });
 
-        // URL с user:pass — обходной путь
-        var urlWithCreds = null;
+        // Заголовки без Auth (для теста 2)
+        var headersNoAuth = { 'Content-Type': 'application/json' };
+
+        // Заголовки с Auth (тесты 3 и 5)
+        var headersAuth = { 'Content-Type': 'application/json' };
         if (config.user || config.pass) {
-            try {
-                var m = config.url.match(/^(https?:\/\/)(.*)$/i);
-                if (m) {
-                    urlWithCreds = m[1] + encodeURIComponent(config.user) + ':' + encodeURIComponent(config.pass) + '@' + m[2] + config.path;
-                }
-            } catch (e) {}
+            headersAuth['Authorization'] = 'Basic ' + btoa(config.user + ':' + config.pass);
         }
+
+        // URL с креденшелами для теста 4
+        var urlWithCreds = null;
+        try {
+            var m = config.url.match(/^(https?:\/\/)(.*)$/i);
+            if (m) {
+                urlWithCreds = m[1] + encodeURIComponent(config.user) + ':' + encodeURIComponent(config.pass) + '@' + m[2] + config.path;
+            }
+        } catch (e) {}
+
+        // URL через прокси для теста 6
+        var urlViaProxy = buildTransmissionUrl(config, true);
+        var headersViaProxy = { 'Content-Type': 'application/json', 'x-requested-with': 'lme-plugins' };
 
         return diagImagePing(config.url + '/').then(function (r) {
             report.tests.push({ label: '1. Image ping (сеть без CORS)', result: r });
-            return diagRawXHR(fullUrl, { method: 'POST', headers: headersWithoutAuth, body: body });
+            return diagRawXHR(fullUrl, { method: 'POST', headers: headersNoAuth, body: body });
         }).then(function (r) {
             report.tests.push({ label: '2. POST без Auth (ожидаем 401)', result: r });
-            return diagRawXHR(fullUrl, { method: 'POST', headers: headersWithAuth, body: body });
+            return diagRawXHR(fullUrl, { method: 'POST', headers: headersAuth, body: body });
         }).then(function (r) {
             report.tests.push({ label: '3. POST + Basic Auth (заголовок)', result: r });
             if (urlWithCreds) {
-                return diagRawXHR(urlWithCreds, { method: 'POST', headers: headersWithoutAuth, body: body });
+                return diagRawXHR(urlWithCreds, { method: 'POST', headers: headersNoAuth, body: body });
             }
-            return { ok: false, time: 0, message: 'пропущено (логин/пароль не заданы)' };
+            return { ok: false, time: 0, message: 'пропущено' };
         }).then(function (r) {
-            report.tests.push({ label: '4. POST + user:pass в URL (обход)', result: r });
-            return diagRawXHR(fullUrl, {
-                method: 'POST',
-                headers: headersWithAuth,
-                body: body
-            });
+            report.tests.push({ label: '4. POST + user:pass в URL', result: r });
+            return diagRawXHR(fullUrl, { method: 'POST', headers: headersAuth, body: body });
         }).then(function (r) {
             report.tests.push({ label: '5. Финальный POST с Auth', result: r });
+            return diagRawXHR(urlViaProxy, { method: 'POST', headers: headersViaProxy, body: body });
+        }).then(function (r) {
+            report.tests.push({ label: '6. POST через LME-прокси (обход)', result: r, url: urlViaProxy });
             return report;
         });
     }
@@ -633,6 +641,7 @@
             host: extractHostPort(tsUrl),
             protocol: tsUrl.indexOf('https://') === 0 ? 'HTTPS' : 'HTTP',
             hasCredentials: false,
+            proxyEnabled: false,
             tests: []
         };
 
@@ -675,6 +684,7 @@
                 lines.push('Хост: ' + report.host);
                 lines.push('Протокол: ' + report.protocol);
                 if (report.hasCredentials) lines.push('Логин/пароль: заданы');
+                if (report.proxyEnabled) lines.push('Прокси: ВКЛЮЧЁН');
                 lines.push(' ');
 
                 report.tests.forEach(function (t) {
@@ -683,40 +693,30 @@
                     lines.push(prefix + ' ' + t.label);
                     lines.push('   ' + buildReportLine('', r));
 
-                    if (r.sentAuthHeader) {
-                        var authShort = String(r.sentAuthHeader).substring(0, 30);
-                        lines.push('   → отправлен Authorization: ' + authShort);
+                    if (r.sentAuthHeader && r.sentAuthHeader !== '(неизвестно)') {
+                        lines.push('   → Authorization: ' + String(r.sentAuthHeader).substring(0, 40));
                     }
                     if (r.wwwAuthenticate && r.wwwAuthenticate !== '(нет)') {
                         lines.push('   → WWW-Authenticate: ' + r.wwwAuthenticate);
                     }
-                    if (r.cors && r.cors !== '(нет)') {
-                        lines.push('   → CORS: ' + r.cors);
-                    }
                     lines.push(' ');
                 });
 
-                // Итоговый вердикт
-                var t2 = report.tests[1] && report.tests[1].result;
-                var t3 = report.tests[2] && report.tests[2].result;
-                var t4 = report.tests[3] && report.tests[3].result;
-
                 if (report.name === 'Transmission') {
-                    if (t2 && t2.status === 401 && t3 && t3.status === 401) {
-                        lines.push('⚠ Auth в заголовке не проходит. Проверьте логин/пароль.');
-                    } else if (t3 && t3.ok) {
-                        lines.push('✅ Basic Auth в заголовке работает.');
-                    } else if (t4 && t4.ok) {
-                        lines.push('✅ Работает URL-обход (user:pass в URL).');
-                        lines.push('→ Измените Transmission URL в настройках на:');
-                        lines.push('   ' + (function () {
-                            try {
-                                var c = getTransmissionConfig();
-                                var m = c.url.match(/^(https?:\/\/)(.*)$/i);
-                                if (m) return m[1] + encodeURIComponent(c.user) + ':' + encodeURIComponent(c.pass) + '@' + m[2];
-                            } catch (e) {}
-                            return '(не удалось построить)';
-                        })());
+                    var t3 = report.tests[2] && report.tests[2].result;
+                    var t6 = report.tests[5] && report.tests[5].result;
+
+                    if (t6 && t6.ok) {
+                        lines.push('✅ Прокси работает! Включите опцию «Использовать прокси».');
+                    } else if (t6 && t6.status === 401) {
+                        lines.push('⚠ Прокси дошёл, но сервер отверг авторизацию.');
+                        lines.push('→ Проверьте логин/пароль в настройках.');
+                    } else if (t6 && !t6.ok) {
+                        lines.push('❌ Прокси не работает: ' + (t6.message || ''));
+                    }
+
+                    if (t3 && t3.ok) {
+                        lines.push('✅ Прямой Basic Auth работает — прокси не нужен.');
                     }
                 }
                 lines.push(' ');
@@ -724,21 +724,17 @@
 
             Lampa.Select.show({
                 title: '🔍 Диагностика подключений',
-                items: lines.map(function (line) {
-                    return { title: line || ' ' };
-                }),
-                onBack: function () {
-                    Lampa.Controller.toggle('settings');
-                }
+                items: lines.map(function (line) { return { title: line || ' ' }; }),
+                onBack: function () { Lampa.Controller.toggle('settings'); }
             });
 
-            // Полный отчёт в консоль
-            console.log('%c[TorrentBridge] === ДИАГНОСТИКА v6.3.4 ===', 'color: #4ade80; font-weight: bold');
+            console.log('%c[TorrentBridge] === ДИАГНОСТИКА v6.4.0 ===', 'color: #4ade80; font-weight: bold');
             reports.forEach(function (report) {
                 console.group(report.name + ' (' + report.testUrl + ')');
                 console.log('Хост:', report.host);
                 console.log('Протокол:', report.protocol);
-                console.log('Credentials заданы:', report.hasCredentials);
+                console.log('Credentials:', report.hasCredentials);
+                console.log('Прокси:', report.proxyEnabled);
                 report.tests.forEach(function (t) {
                     console.log((t.result.ok ? '✅' : '❌') + ' ' + t.label + ':', t.result);
                 });
@@ -1100,7 +1096,8 @@
         }).then(function () {
             return transmissionAuth(false).then(function () {
                 var config = getTransmissionConfig();
-                results.push('✅ Transmission: ' + config.url + config.path);
+                var mode = useProxy() ? ' (через прокси)' : '';
+                results.push('✅ Transmission' + mode + ': ' + config.url + config.path);
             }).catch(function (e) {
                 results.push('❌ Transmission: ' + (e.message || 'недоступен'));
             });
@@ -1171,7 +1168,7 @@
             },
             field: {
                 name: 'TorrServer URL',
-                description: 'Адрес TorrServer (например http://192.168.1.101:8090)'
+                description: 'Адрес TorrServer'
             },
             onChange: function (v) {
                 Lampa.Storage.set(CONFIG_PREFIX + '_torrserver_url', String(v || '').trim());
@@ -1189,10 +1186,11 @@
             },
             field: {
                 name: 'Transmission URL',
-                description: 'Адрес Transmission (например http://192.168.1.112:9091)'
+                description: 'Адрес Transmission'
             },
             onChange: function (v) {
                 Lampa.Storage.set(CONFIG_PREFIX + '_transmission_url', String(v || '').trim());
+                Lampa.Storage.set(CONFIG_PREFIX + '_transmission_key', '');
                 Lampa.Settings.update();
             }
         });
@@ -1247,6 +1245,28 @@
             }
         });
 
+        // НОВЫЙ ПАРАМЕТР — ПРОКСИ
+        Lampa.SettingsApi.addParam({
+            component: MANIFEST.component,
+            param: {
+                name: CONFIG_PREFIX + '_use_proxy',
+                type: 'trigger',
+                default: false,
+                values: Lampa.Storage.get(CONFIG_PREFIX + '_use_proxy', false)
+            },
+            field: {
+                name: '🌐 Использовать HTTPS-прокси',
+                description: 'Обход блокировки WebView на Android. Запросы к Transmission пойдут через apx.lme.isroot.in'
+            },
+            onChange: function (v) {
+                var enabled = v === true || v === 'true';
+                Lampa.Storage.set(CONFIG_PREFIX + '_use_proxy', enabled);
+                Lampa.Storage.set(CONFIG_PREFIX + '_transmission_key', '');
+                Lampa.Bell.push({ text: enabled ? '🌐 Прокси включён' : '🌐 Прокси выключен' });
+                Lampa.Settings.update();
+            }
+        });
+
         Lampa.SettingsApi.addParam({
             component: MANIFEST.component,
             param: {
@@ -1257,7 +1277,7 @@
             },
             field: {
                 name: 'Путь для фильмов',
-                description: 'Путь на сервере Transmission для фильмов (опционально)'
+                description: 'Путь на сервере Transmission (опционально)'
             },
             onChange: function (v) {
                 Lampa.Storage.set(CONFIG_PREFIX + '_path_Movies', String(v || '').trim());
@@ -1275,7 +1295,7 @@
             },
             field: {
                 name: 'Путь для сериалов',
-                description: 'Путь на сервере Transmission для сериалов (опционально)'
+                description: 'Путь на сервере Transmission (опционально)'
             },
             onChange: function (v) {
                 Lampa.Storage.set(CONFIG_PREFIX + '_path_TV', String(v || '').trim());
@@ -1285,39 +1305,27 @@
 
         Lampa.SettingsApi.addParam({
             component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_test',
-                type: 'button',
-                default: false
-            },
+            param: { name: CONFIG_PREFIX + '_test', type: 'button', default: false },
             field: { name: '🔌 Проверить подключения' },
             onChange: function () { testConnections(); }
         });
 
         Lampa.SettingsApi.addParam({
             component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_diagnostics',
-                type: 'button',
-                default: false
-            },
+            param: { name: CONFIG_PREFIX + '_diagnostics', type: 'button', default: false },
             field: {
                 name: '🔍 Диагностика подключения',
-                description: 'Расширенный отчёт по Basic Auth, CORS и сетевым тестам'
+                description: 'Полный отчёт по Auth, CORS, прокси'
             },
             onChange: function () { runDiagnostics(); }
         });
 
         Lampa.SettingsApi.addParam({
             component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_info',
-                type: 'static',
-                default: ''
-            },
+            param: { name: CONFIG_PREFIX + '_info', type: 'static', default: '' },
             field: {
-                name: 'Версия 6.3.4',
-                description: 'Расширенная диагностика Basic Auth.'
+                name: 'Версия 6.4.0',
+                description: 'С поддержкой HTTPS-прокси.'
             }
         });
     }
@@ -1325,7 +1333,7 @@
     // ==================== ИНИЦИАЛИЗАЦИЯ ====================
 
     function init() {
-        log('Init TorrentBridge v6.3.4');
+        log('Init TorrentBridge v6.4.0');
 
         if (!$('#torrentbridge-styles').length) {
             $('head').append(STYLES);
@@ -1357,7 +1365,7 @@
             }
         });
 
-        log('TorrentBridge v6.3.4 initialized');
+        log('TorrentBridge v6.4.0 initialized');
     }
 
     if (!window.plugin_torrentbridge_v6_ready) {
