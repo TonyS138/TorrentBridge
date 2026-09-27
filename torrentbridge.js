@@ -1,6 +1,6 @@
 /**
- * Torrent Bridge - v6.3.3
- * + Диагностика через Lampa.Select (совместимо со всеми сборками Lampa)
+ * Torrent Bridge - v6.3.4
+ * + Расширенная диагностика Basic Auth и обход через URL credentials
  */
 
 (function () {
@@ -8,7 +8,7 @@
 
     const MANIFEST = {
         type: 'other',
-        version: '6.3.3',
+        version: '6.3.4',
         author: 'Torrent Bridge',
         name: 'Torrent Bridge',
         component: 'torrentbridge',
@@ -413,159 +413,93 @@
         }
     }
 
-    function diagLampaRequest(url, options) {
-        options = options || {};
-        return new Promise(function (resolve) {
-            var t0 = Date.now();
-            var network = new Lampa.Reguest();
-            network.timeout(options.timeout || 8000);
-
-            network.quiet(
-                url,
-                function (response) {
-                    resolve({
-                        ok: true,
-                        method: 'Lampa.Reguest',
-                        time: Date.now() - t0,
-                        status: 200,
-                        response: typeof response === 'string' ? response.substring(0, 200) : response
-                    });
-                },
-                function (err) {
-                    resolve({
-                        ok: false,
-                        method: 'Lampa.Reguest',
-                        time: Date.now() - t0,
-                        status: err && err.status ? err.status : 0,
-                        statusText: err && err.statusText ? err.statusText : '',
-                        message: err && err.message ? err.message : String(err),
-                        raw: (function () {
-                            try { return JSON.stringify(err).substring(0, 300); } catch (e) { return ''; }
-                        })()
-                    });
-                },
-                options.body || null,
-                {
-                    headers: options.headers || {},
-                    type: options.method || 'GET',
-                    dataType: 'text'
-                }
-            );
-        });
-    }
-
-    function diagFetch(url, options) {
-        options = options || {};
-        var t0 = Date.now();
-        var timeout = options.timeout || 8000;
-
-        if (typeof fetch !== 'function') {
-            return Promise.resolve({
-                ok: false,
-                method: 'fetch',
-                message: 'fetch не поддерживается',
-                time: 0
-            });
-        }
-
-        var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-        var timer = null;
-
-        var fetchPromise = fetch(url, {
-            method: options.method || 'GET',
-            headers: options.headers || {},
-            body: options.body || undefined,
-            signal: controller ? controller.signal : undefined
-        });
-
-        var timeoutPromise = new Promise(function (_, reject) {
-            timer = setTimeout(function () {
-                if (controller) controller.abort();
-                reject(new Error('timeout ' + timeout + 'ms'));
-            }, timeout);
-        });
-
-        return Promise.race([fetchPromise, timeoutPromise]).then(function (res) {
-            if (timer) clearTimeout(timer);
-            return res.text().then(function (text) {
-                return {
-                    ok: res.ok,
-                    method: 'fetch',
-                    time: Date.now() - t0,
-                    status: res.status,
-                    statusText: res.statusText,
-                    response: text.substring(0, 200),
-                    cors: res.headers.get('access-control-allow-origin') || '(нет)'
-                };
-            }).catch(function () {
-                return {
-                    ok: res.ok,
-                    method: 'fetch',
-                    time: Date.now() - t0,
-                    status: res.status,
-                    statusText: res.statusText
-                };
-            });
-        }).catch(function (err) {
-            if (timer) clearTimeout(timer);
-            return {
-                ok: false,
-                method: 'fetch',
-                time: Date.now() - t0,
-                message: err && err.message ? err.message : String(err),
-                name: err && err.name ? err.name : ''
-            };
-        });
-    }
-
-    function diagXHR(url, options) {
+    /**
+     * Универсальный XHR-тест с отдачей всех деталей.
+     * Если options.includeAuthHeaders = true, отправляет заголовок Authorization.
+     * Если options.urlCredentials задан — вставляет user:pass в URL.
+     */
+    function diagRawXHR(url, options) {
         options = options || {};
         var t0 = Date.now();
 
         return new Promise(function (resolve) {
             var xhr = new XMLHttpRequest();
+            var timedOut = false;
             var timer = setTimeout(function () {
+                timedOut = true;
                 try { xhr.abort(); } catch (e) {}
                 resolve({
                     ok: false,
-                    method: 'XHR',
                     time: Date.now() - t0,
-                    message: 'timeout'
+                    message: 'timeout ' + (options.timeout || 8000) + 'ms'
                 });
             }, options.timeout || 8000);
 
-            xhr.open(options.method || 'GET', url, true);
+            try {
+                xhr.open(options.method || 'GET', url, true);
+            } catch (e) {
+                clearTimeout(timer);
+                resolve({
+                    ok: false,
+                    time: Date.now() - t0,
+                    message: 'open() error: ' + (e.message || String(e))
+                });
+                return;
+            }
 
             try {
                 if (options.headers) {
                     Object.keys(options.headers).forEach(function (k) {
-                        xhr.setRequestHeader(k, options.headers[k]);
+                        try {
+                            xhr.setRequestHeader(k, options.headers[k]);
+                        } catch (e) {
+                            log('setRequestHeader failed for', k, e);
+                        }
                     });
                 }
-            } catch (e) {}
+            } catch (e) {
+                log('setRequestHeader loop failed:', e);
+            }
+
+            // Пробуем узнать, реально ли ушёл Authorization
+            var sentAuthHeader = '(неизвестно)';
+            try {
+                if (xhr.getRequestHeader) {
+                    sentAuthHeader = xhr.getRequestHeader('Authorization') || '(не отправлен)';
+                }
+            } catch (e) {
+                sentAuthHeader = 'ошибка чтения: ' + (e.message || String(e));
+            }
 
             xhr.onload = function () {
                 clearTimeout(timer);
+                var respAuth = '(нет)';
+                var respCors = '(нет)';
+                try { respAuth = xhr.getResponseHeader('WWW-Authenticate') || '(нет)'; } catch (e) {}
+                try { respCors = xhr.getResponseHeader('Access-Control-Allow-Origin') || '(нет)'; } catch (e) {}
+
                 resolve({
                     ok: xhr.status >= 200 && xhr.status < 400,
-                    method: 'XHR',
                     time: Date.now() - t0,
                     status: xhr.status,
                     statusText: xhr.statusText,
-                    response: String(xhr.responseText || '').substring(0, 200),
-                    cors: xhr.getResponseHeader('Access-Control-Allow-Origin') || '(нет)'
+                    sentAuthHeader: sentAuthHeader,
+                    wwwAuthenticate: respAuth,
+                    cors: respCors,
+                    response: String(xhr.responseText || '').substring(0, 200)
                 });
             };
 
             xhr.onerror = function () {
                 clearTimeout(timer);
+                if (timedOut) return;
                 resolve({
                     ok: false,
-                    method: 'XHR',
                     time: Date.now() - t0,
                     status: xhr.status,
                     statusText: xhr.statusText,
-                    message: 'onerror (сеть/CORS/cleartext)'
+                    sentAuthHeader: sentAuthHeader,
+                    message: 'onerror (сеть / CORS / cleartext)'
                 });
             };
 
@@ -573,7 +507,6 @@
                 clearTimeout(timer);
                 resolve({
                     ok: false,
-                    method: 'XHR',
                     time: Date.now() - t0,
                     message: 'ontimeout'
                 });
@@ -585,9 +518,8 @@
                 clearTimeout(timer);
                 resolve({
                     ok: false,
-                    method: 'XHR',
                     time: Date.now() - t0,
-                    message: 'send error: ' + (e.message || String(e))
+                    message: 'send() error: ' + (e.message || String(e))
                 });
             }
         });
@@ -602,7 +534,6 @@
                 img.src = '';
                 resolve({
                     ok: false,
-                    method: 'Image ping',
                     time: Date.now() - t0,
                     message: 'timeout'
                 });
@@ -610,22 +541,12 @@
 
             img.onload = function () {
                 clearTimeout(timer);
-                resolve({
-                    ok: true,
-                    method: 'Image ping',
-                    time: Date.now() - t0,
-                    message: 'картинка загрузилась (сеть работает)'
-                });
+                resolve({ ok: true, time: Date.now() - t0, message: 'картинка загрузилась' });
             };
 
             img.onerror = function () {
                 clearTimeout(timer);
-                resolve({
-                    ok: false,
-                    method: 'Image ping',
-                    time: Date.now() - t0,
-                    message: 'ошибка загрузки (сервер недоступен)'
-                });
+                resolve({ ok: false, time: Date.now() - t0, message: 'сервер недоступен / нет картинки' });
             };
 
             var sep = url.indexOf('?') === -1 ? '?' : '&';
@@ -633,57 +554,116 @@
         });
     }
 
-    function diagnoseServer(name, baseUrl, testPath, options) {
-        options = options || {};
-        var fullUrl = baseUrl + testPath;
+    /**
+     * Полная диагностика Transmission с 5 тестами:
+     *  1. Image ping — сеть
+     *  2. XHR без авторизации — видим 401
+     *  3. XHR с Basic Auth в заголовке — проверяем, уходит ли заголовок
+     *  4. XHR с user:pass в URL — обходной путь для WebView
+     *  5. Lampa.Reguest — как в основном коде
+     */
+    function diagnoseTransmission() {
+        var config = getTransmissionConfig();
+        var fullUrl = config.url + config.path;
         var report = {
-            name: name,
-            baseUrl: baseUrl,
+            name: 'Transmission',
             testUrl: fullUrl,
-            host: extractHostPort(baseUrl),
-            protocol: baseUrl.indexOf('https://') === 0 ? 'HTTPS' : 'HTTP',
+            host: extractHostPort(config.url),
+            protocol: config.url.indexOf('https://') === 0 ? 'HTTPS' : 'HTTP',
+            hasCredentials: Boolean(config.user || config.pass),
             tests: []
         };
 
-        return diagImagePing(baseUrl + '/').then(function (r) {
-            report.tests.push({ label: 'Image ping (без CORS)', result: r });
-            return diagLampaRequest(fullUrl, options);
+        var authHeader = null;
+        if (config.user || config.pass) {
+            authHeader = 'Basic ' + btoa(config.user + ':' + config.pass);
+        }
+
+        var headersWithAuth = { 'Content-Type': 'application/json' };
+        if (authHeader) headersWithAuth['Authorization'] = authHeader;
+        var sessionId = Lampa.Storage.get(CONFIG_PREFIX + '_transmission_key');
+        if (sessionId) headersWithAuth['X-Transmission-Session-Id'] = sessionId;
+
+        var headersWithoutAuth = { 'Content-Type': 'application/json' };
+
+        var body = JSON.stringify({ method: 'session-get' });
+
+        // URL с user:pass — обходной путь
+        var urlWithCreds = null;
+        if (config.user || config.pass) {
+            try {
+                var m = config.url.match(/^(https?:\/\/)(.*)$/i);
+                if (m) {
+                    urlWithCreds = m[1] + encodeURIComponent(config.user) + ':' + encodeURIComponent(config.pass) + '@' + m[2] + config.path;
+                }
+            } catch (e) {}
+        }
+
+        return diagImagePing(config.url + '/').then(function (r) {
+            report.tests.push({ label: '1. Image ping (сеть без CORS)', result: r });
+            return diagRawXHR(fullUrl, { method: 'POST', headers: headersWithoutAuth, body: body });
         }).then(function (r) {
-            report.tests.push({ label: 'Lampa.Reguest', result: r });
-            return diagFetch(fullUrl, options);
+            report.tests.push({ label: '2. POST без Auth (ожидаем 401)', result: r });
+            return diagRawXHR(fullUrl, { method: 'POST', headers: headersWithAuth, body: body });
         }).then(function (r) {
-            report.tests.push({ label: 'fetch()', result: r });
-            return diagXHR(fullUrl, options);
+            report.tests.push({ label: '3. POST + Basic Auth (заголовок)', result: r });
+            if (urlWithCreds) {
+                return diagRawXHR(urlWithCreds, { method: 'POST', headers: headersWithoutAuth, body: body });
+            }
+            return { ok: false, time: 0, message: 'пропущено (логин/пароль не заданы)' };
         }).then(function (r) {
-            report.tests.push({ label: 'XMLHttpRequest', result: r });
+            report.tests.push({ label: '4. POST + user:pass в URL (обход)', result: r });
+            return diagRawXHR(fullUrl, {
+                method: 'POST',
+                headers: headersWithAuth,
+                body: body
+            });
+        }).then(function (r) {
+            report.tests.push({ label: '5. Финальный POST с Auth', result: r });
             return report;
         });
+    }
+
+    function diagnoseTorrServer() {
+        var tsUrl = getTorrServerUrl();
+        var fullUrl = tsUrl + '/echo';
+        var report = {
+            name: 'TorrServer',
+            testUrl: fullUrl,
+            host: extractHostPort(tsUrl),
+            protocol: tsUrl.indexOf('https://') === 0 ? 'HTTPS' : 'HTTP',
+            hasCredentials: false,
+            tests: []
+        };
+
+        return diagImagePing(tsUrl + '/').then(function (r) {
+            report.tests.push({ label: '1. Image ping (сеть без CORS)', result: r });
+            return diagRawXHR(fullUrl, { method: 'GET' });
+        }).then(function (r) {
+            report.tests.push({ label: '2. GET /echo', result: r });
+            return report;
+        });
+    }
+
+    function buildReportLine(prefix, r) {
+        var line = prefix + ' ';
+        if (r.ok) {
+            line += 'OK (' + r.time + 'ms)';
+            if (r.status) line += ', HTTP ' + r.status;
+        } else {
+            if (r.status) line += 'HTTP ' + r.status + (r.statusText ? ' ' + r.statusText : '') + ' — ';
+            if (r.message) line += r.message + ' ';
+            if (r.time) line += '(' + r.time + 'ms)';
+        }
+        return line;
     }
 
     function runDiagnostics() {
         showLoader();
 
-        var tsUrl = getTorrServerUrl();
-        var trConfig = getTransmissionConfig();
-
-        var trHeaders = { 'Content-Type': 'application/json' };
-        if (trConfig.user || trConfig.pass) {
-            trHeaders['Authorization'] = 'Basic ' + btoa(trConfig.user + ':' + trConfig.pass);
-        }
-        var sessionId = Lampa.Storage.get(CONFIG_PREFIX + '_transmission_key');
-        if (sessionId) trHeaders['X-Transmission-Session-Id'] = sessionId;
-
         Promise.all([
-            diagnoseServer('TorrServer', tsUrl, '/echo', {
-                method: 'GET',
-                timeout: 8000
-            }),
-            diagnoseServer('Transmission', trConfig.url, trConfig.path, {
-                method: 'POST',
-                headers: trHeaders,
-                body: JSON.stringify({ method: 'session-get' }),
-                timeout: 8000
-            })
+            diagnoseTorrServer(),
+            diagnoseTransmission()
         ]).then(function (reports) {
             hideLoader();
 
@@ -694,42 +674,51 @@
                 lines.push('Адрес: ' + report.testUrl);
                 lines.push('Хост: ' + report.host);
                 lines.push('Протокол: ' + report.protocol);
+                if (report.hasCredentials) lines.push('Логин/пароль: заданы');
+                lines.push(' ');
 
                 report.tests.forEach(function (t) {
                     var r = t.result;
-                    var line = (r.ok ? '✅' : '❌') + ' ' + t.label + ': ';
+                    var prefix = r.ok ? '✅' : '❌';
+                    lines.push(prefix + ' ' + t.label);
+                    lines.push('   ' + buildReportLine('', r));
 
-                    if (r.ok) {
-                        line += 'OK (' + r.time + 'ms)';
-                        if (r.status) line += ', HTTP ' + r.status;
-                    } else {
-                        if (r.message) line += r.message;
-                        if (r.status) line += ' [HTTP ' + r.status + (r.statusText ? ' ' + r.statusText : '') + ']';
-                        if (r.time) line += ' (' + r.time + 'ms)';
+                    if (r.sentAuthHeader) {
+                        var authShort = String(r.sentAuthHeader).substring(0, 30);
+                        lines.push('   → отправлен Authorization: ' + authShort);
                     }
-
-                    lines.push(line);
+                    if (r.wwwAuthenticate && r.wwwAuthenticate !== '(нет)') {
+                        lines.push('   → WWW-Authenticate: ' + r.wwwAuthenticate);
+                    }
+                    if (r.cors && r.cors !== '(нет)') {
+                        lines.push('   → CORS: ' + r.cors);
+                    }
+                    lines.push(' ');
                 });
 
-                var allFailed = report.tests.every(function (t) { return !t.result.ok; });
-                var imgPingOk = report.tests[0] && report.tests[0].result.ok;
-                var jsTests = report.tests.slice(1);
-                var jsFailed = jsTests.length > 0 && jsTests.every(function (t) { return !t.result.ok; });
+                // Итоговый вердикт
+                var t2 = report.tests[1] && report.tests[1].result;
+                var t3 = report.tests[2] && report.tests[2].result;
+                var t4 = report.tests[3] && report.tests[3].result;
 
-                if (allFailed) {
-                    lines.push('⚠ Все проверки провалились.');
-                    lines.push('→ Устройство в другой сети, либо сервер не слушает внешний интерфейс (только 127.0.0.1), либо файрвол блокирует порт.');
-                } else if (imgPingOk && jsFailed) {
-                    lines.push('⚠ Сеть до сервера есть, но JS-запросы блокируются.');
-                    lines.push('→ Вероятная причина: CORS или cleartext-блокировка Android.');
-                    lines.push('→ Разрешите CORS на сервере (Access-Control-Allow-Origin: *).');
-                    lines.push('→ Или добавьте usesCleartextTraffic="true" в манифест Lampa.');
-                } else if (report.protocol === 'HTTP') {
-                    lines.push('⚠ Используется HTTP. Android может блокировать cleartext.');
-                } else {
-                    lines.push('✅ Сервер доступен.');
+                if (report.name === 'Transmission') {
+                    if (t2 && t2.status === 401 && t3 && t3.status === 401) {
+                        lines.push('⚠ Auth в заголовке не проходит. Проверьте логин/пароль.');
+                    } else if (t3 && t3.ok) {
+                        lines.push('✅ Basic Auth в заголовке работает.');
+                    } else if (t4 && t4.ok) {
+                        lines.push('✅ Работает URL-обход (user:pass в URL).');
+                        lines.push('→ Измените Transmission URL в настройках на:');
+                        lines.push('   ' + (function () {
+                            try {
+                                var c = getTransmissionConfig();
+                                var m = c.url.match(/^(https?:\/\/)(.*)$/i);
+                                if (m) return m[1] + encodeURIComponent(c.user) + ':' + encodeURIComponent(c.pass) + '@' + m[2];
+                            } catch (e) {}
+                            return '(не удалось построить)';
+                        })());
+                    }
                 }
-
                 lines.push(' ');
             });
 
@@ -744,15 +733,14 @@
             });
 
             // Полный отчёт в консоль
-            console.log('%c[TorrentBridge] === ДИАГНОСТИКА ===', 'color: #4ade80; font-weight: bold');
+            console.log('%c[TorrentBridge] === ДИАГНОСТИКА v6.3.4 ===', 'color: #4ade80; font-weight: bold');
             reports.forEach(function (report) {
                 console.group(report.name + ' (' + report.testUrl + ')');
                 console.log('Хост:', report.host);
                 console.log('Протокол:', report.protocol);
+                console.log('Credentials заданы:', report.hasCredentials);
                 report.tests.forEach(function (t) {
-                    var r = t.result;
-                    var prefix = r.ok ? '✅' : '❌';
-                    console.log(prefix + ' ' + t.label + ':', r);
+                    console.log((t.result.ok ? '✅' : '❌') + ' ' + t.label + ':', t.result);
                 });
                 console.groupEnd();
             });
@@ -937,453 +925,4 @@
                         var poster = movie.poster || movie.img || '';
 
                         if (!files || files.length === 0) {
-                            playStream(torrServerStreamUrl(hash, 0), title, poster);
-                            return;
-                        }
-
-                        var mediaFiles = [];
-                        files.forEach(function (file, index) {
-                            if (file && file.name && isMediaFile(file.name)) {
-                                mediaFiles.push(Object.assign({}, file, { _index: index }));
-                            }
-                        });
-
-                        if (mediaFiles.length === 0) {
-                            playStream(torrServerStreamUrl(hash, 0), title, poster);
-                            return;
-                        }
-
-                        if (mediaFiles.length === 1) {
-                            playStream(torrServerStreamUrl(hash, mediaFiles[0]._index), title, poster);
-                            return;
-                        }
-
-                        hideLoader();
-
-                        var fileItems = mediaFiles.map(function (f) {
-                            return {
-                                title: String(f.name).split('/').pop() || 'File',
-                                file: f,
-                                index: f._index
-                            };
-                        });
-
-                        Lampa.Select.show({
-                            title: 'Выберите файл',
-                            items: fileItems,
-                            onSelect: function (item) {
-                                playStream(torrServerStreamUrl(hash, item.index), title, poster);
-                            },
-                            onBack: function () { Lampa.Controller.toggle('content'); }
-                        });
-                    });
-                });
-            });
-        }).catch(function (e) {
-            hideLoader();
-            error('playFromTransmission error:', e);
-            Lampa.Bell.push({ text: 'Ошибка: ' + (e.message || 'не удалось запустить') });
-        });
-    }
-
-    // ==================== UI: КНОПКА ====================
-
-    function buildBridgeButton() {
-        return $(
-            '<div class="full-start__button selector button--torrent_bridge">' +
-                '<div class="tb-icon-wrap">' +
-                    '<svg class="tb-ring" viewBox="0 0 32 32">' +
-                        '<circle class="tb-ring-bg" cx="16" cy="16" r="14"></circle>' +
-                        '<circle class="tb-ring-fill" cx="16" cy="16" r="14"></circle>' +
-                    '</svg>' +
-                    '<svg class="tb-icon" viewBox="0 0 24 24">' +
-                        '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>' +
-                    '</svg>' +
-                '</div>' +
-                '<span class="tb-label">' +
-                    '<span class="tb-title">TorrentBridge</span>' +
-                    '<span class="tb-percent">0%</span>' +
-                '</span>' +
-            '</div>'
-        );
-    }
-
-    function updateButtonVisual($btn, torrent) {
-        if (!$btn || !$btn.length) return;
-
-        var $ring = $btn.find('.tb-ring-fill');
-        var $percent = $btn.find('.tb-percent');
-        var $title = $btn.find('.tb-title');
-
-        if (!torrent) {
-            $btn.removeClass('is-active');
-            $percent.text('').removeClass('is-downloading is-seeding is-paused');
-            $ring.css('stroke-dashoffset', 88).removeClass('is-low is-mid is-high');
-            $title.text('TorrentBridge');
-            return;
-        }
-
-        var percent = Math.round((torrent.completed || 0) * 100);
-        var stateLower = String(torrent.state || '').toLowerCase();
-        var cls = progressClass(percent);
-
-        $percent.text(percent + '%').removeClass('is-downloading is-seeding is-paused');
-
-        var isDownloading = stateLower.indexOf('download') !== -1 || stateLower.indexOf('check') !== -1 || stateLower.indexOf('verif') !== -1;
-        var isSeeding = stateLower.indexOf('seed') !== -1 || stateLower.indexOf('upload') !== -1;
-        var isPaused = stateLower.indexOf('paus') !== -1 || stateLower.indexOf('stop') !== -1;
-
-        if (isSeeding || percent >= 100) {
-            $percent.addClass('is-seeding');
-            $title.text('TorrentBridge — готово');
-            $btn.removeClass('is-active');
-        } else if (isDownloading) {
-            $percent.addClass('is-downloading');
-            $title.text('TorrentBridge');
-            $btn.addClass('is-active');
-        } else if (isPaused) {
-            $percent.addClass('is-paused');
-            $title.text('TorrentBridge — пауза');
-            $btn.removeClass('is-active');
-        } else {
-            $title.text('TorrentBridge');
-            $btn.removeClass('is-active');
-        }
-
-        var circumference = 88;
-        var offset = circumference - (percent / 100) * circumference;
-        $ring
-            .removeClass('is-low is-mid is-high')
-            .addClass(cls)
-            .css('stroke-dashoffset', offset);
-    }
-
-    function refreshButtonStatus(movie, $btn) {
-        if (!$btn || !$btn.length) return;
-        findTorrentForMovie(movie).then(function (torrent) {
-            updateButtonVisual($btn, torrent);
-        }).catch(function () {
-            updateButtonVisual($btn, null);
-        });
-    }
-
-    function addMainButtons(movie) {
-        currentMovie = movie;
-
-        var container = $('.full-start-new__buttons');
-        if (!container.length) return;
-
-        container.find('.button--torrent_bridge').remove();
-
-        var $btn = buildBridgeButton();
-
-        $btn.on('hover:enter', function () {
-            playFromTransmission(movie);
-        });
-
-        container.append($btn);
-
-        refreshButtonStatus(movie, $btn);
-
-        if (statusCheckTimer) clearInterval(statusCheckTimer);
-        statusCheckTimer = setInterval(function () {
-            if ($btn.closest('body').length === 0) {
-                clearInterval(statusCheckTimer);
-                statusCheckTimer = null;
-                return;
-            }
-            refreshButtonStatus(movie, $btn);
-        }, 8000);
-
-        log('Animated button added');
-    }
-
-    // ==================== ТЕСТИРОВАНИЕ ====================
-
-    function testConnections() {
-        showLoader();
-        var results = [];
-
-        return torrServerRequest('/echo', 'GET').then(function (r) {
-            var ok = r && String(r).indexOf('MatriX') !== -1;
-            results.push((ok ? '✅' : '⚠️') + ' TorrServer: ' + getTorrServerUrl());
-        }).catch(function (e) {
-            results.push('❌ TorrServer: ' + (e.message || 'недоступен'));
-        }).then(function () {
-            return transmissionAuth(false).then(function () {
-                var config = getTransmissionConfig();
-                results.push('✅ Transmission: ' + config.url + config.path);
-            }).catch(function (e) {
-                results.push('❌ Transmission: ' + (e.message || 'недоступен'));
-            });
-        }).then(function () {
-            hideLoader();
-            Lampa.Select.show({
-                title: 'Результаты проверки',
-                items: results.map(function (r) { return { title: r }; }),
-                onBack: function () { Lampa.Controller.toggle('content'); }
-            });
-        });
-    }
-
-    // ==================== НАСТРОЙКИ ====================
-
-    function createSettings() {
-        Lampa.SettingsApi.addComponent({
-            component: MANIFEST.component,
-            name: MANIFEST.name,
-            icon: MANIFEST.icon
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_enabled',
-                type: 'trigger',
-                default: false,
-                values: Lampa.Storage.get(CONFIG_PREFIX + '_enabled', false)
-            },
-            field: {
-                name: 'Активировать плагин',
-                description: 'Добавляет кнопки в карточку фильма и контекстное меню торрентов'
-            },
-            onChange: function (v) {
-                var enabled = v === true || v === 'true';
-                Lampa.Storage.set(CONFIG_PREFIX + '_enabled', enabled);
-                Lampa.Bell.push({ text: enabled ? '✅ TorrentBridge активирован' : '⛔ TorrentBridge деактивирован' });
-                Lampa.Settings.update();
-            }
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_player_type',
-                type: 'select',
-                default: 'internal',
-                values: {
-                    internal: 'Встроенный плеер Lampa',
-                    external: 'Внешний (браузер)'
-                }
-            },
-            field: { name: 'Выбор плеера' },
-            onChange: function (v) {
-                Lampa.Storage.set(CONFIG_PREFIX + '_player_type', v);
-                Lampa.Settings.update();
-            }
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_torrserver_url',
-                type: 'input',
-                default: 'http://192.168.1.101:8090',
-                values: Lampa.Storage.get(CONFIG_PREFIX + '_torrserver_url', 'http://192.168.1.101:8090')
-            },
-            field: {
-                name: 'TorrServer URL',
-                description: 'Адрес TorrServer (например http://192.168.1.101:8090)'
-            },
-            onChange: function (v) {
-                Lampa.Storage.set(CONFIG_PREFIX + '_torrserver_url', String(v || '').trim());
-                Lampa.Settings.update();
-            }
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_transmission_url',
-                type: 'input',
-                default: 'http://192.168.1.112:9091',
-                values: Lampa.Storage.get(CONFIG_PREFIX + '_transmission_url', 'http://192.168.1.112:9091')
-            },
-            field: {
-                name: 'Transmission URL',
-                description: 'Адрес Transmission (например http://192.168.1.112:9091)'
-            },
-            onChange: function (v) {
-                Lampa.Storage.set(CONFIG_PREFIX + '_transmission_url', String(v || '').trim());
-                Lampa.Settings.update();
-            }
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_transmission_user',
-                type: 'input',
-                default: '',
-                values: Lampa.Storage.get(CONFIG_PREFIX + '_transmission_user', '')
-            },
-            field: { name: 'Transmission логин' },
-            onChange: function (v) {
-                Lampa.Storage.set(CONFIG_PREFIX + '_transmission_user', String(v || '').trim());
-                Lampa.Storage.set(CONFIG_PREFIX + '_transmission_key', '');
-                Lampa.Settings.update();
-            }
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_transmission_pass',
-                type: 'input',
-                default: '',
-                values: Lampa.Storage.get(CONFIG_PREFIX + '_transmission_pass', '')
-            },
-            field: { name: 'Transmission пароль' },
-            onChange: function (v) {
-                Lampa.Storage.set(CONFIG_PREFIX + '_transmission_pass', String(v || ''));
-                Lampa.Storage.set(CONFIG_PREFIX + '_transmission_key', '');
-                Lampa.Settings.update();
-            }
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_transmission_path',
-                type: 'input',
-                default: '/transmission/rpc',
-                values: Lampa.Storage.get(CONFIG_PREFIX + '_transmission_path', '/transmission/rpc')
-            },
-            field: {
-                name: 'Transmission RPC путь',
-                description: 'Обычно /transmission/rpc'
-            },
-            onChange: function (v) {
-                Lampa.Storage.set(CONFIG_PREFIX + '_transmission_path', String(v || '/transmission/rpc').trim());
-                Lampa.Settings.update();
-            }
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_path_Movies',
-                type: 'input',
-                default: '',
-                values: Lampa.Storage.get(CONFIG_PREFIX + '_path_Movies', '')
-            },
-            field: {
-                name: 'Путь для фильмов',
-                description: 'Путь на сервере Transmission для фильмов (опционально)'
-            },
-            onChange: function (v) {
-                Lampa.Storage.set(CONFIG_PREFIX + '_path_Movies', String(v || '').trim());
-                Lampa.Settings.update();
-            }
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_path_TV',
-                type: 'input',
-                default: '',
-                values: Lampa.Storage.get(CONFIG_PREFIX + '_path_TV', '')
-            },
-            field: {
-                name: 'Путь для сериалов',
-                description: 'Путь на сервере Transmission для сериалов (опционально)'
-            },
-            onChange: function (v) {
-                Lampa.Storage.set(CONFIG_PREFIX + '_path_TV', String(v || '').trim());
-                Lampa.Settings.update();
-            }
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_test',
-                type: 'button',
-                default: false
-            },
-            field: { name: '🔌 Проверить подключения' },
-            onChange: function () { testConnections(); }
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_diagnostics',
-                type: 'button',
-                default: false
-            },
-            field: {
-                name: '🔍 Диагностика подключения',
-                description: 'Подробный отчёт: причины недоступности, CORS, cleartext'
-            },
-            onChange: function () { runDiagnostics(); }
-        });
-
-        Lampa.SettingsApi.addParam({
-            component: MANIFEST.component,
-            param: {
-                name: CONFIG_PREFIX + '_info',
-                type: 'static',
-                default: ''
-            },
-            field: {
-                name: 'Версия 6.3.3',
-                description: 'С диагностикой через Lampa.Select.'
-            }
-        });
-    }
-
-    // ==================== ИНИЦИАЛИЗАЦИЯ ====================
-
-    function init() {
-        log('Init TorrentBridge v6.3.3');
-
-        if (!$('#torrentbridge-styles').length) {
-            $('head').append(STYLES);
-        }
-
-        createSettings();
-        Lampa.Manifest.plugins = MANIFEST;
-
-        hookTorrentMenu();
-
-        Lampa.Listener.follow('full', function (e) {
-            if (e.type === 'complite') {
-                setTimeout(function () {
-                    try {
-                        var render = e.object.activity.render();
-                        var movie = render.model || e.object.movie || e.object;
-
-                        if (movie && movie.id) {
-                            if (isEnabled()) {
-                                addMainButtons(movie);
-                            } else {
-                                currentMovie = movie;
-                            }
-                        }
-                    } catch (err) {
-                        error('Error in full handler:', err);
-                    }
-                }, 1000);
-            }
-        });
-
-        log('TorrentBridge v6.3.3 initialized');
-    }
-
-    if (!window.plugin_torrentbridge_v6_ready) {
-        window.plugin_torrentbridge_v6_ready = true;
-
-        if (window.appready) {
-            init();
-        } else {
-            Lampa.Listener.follow('app', function (e) {
-                if (e.type === 'ready') {
-                    setTimeout(init, 500);
-                }
-            });
-        }
-    }
-
-})();
+                            play
